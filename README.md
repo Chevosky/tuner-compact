@@ -100,6 +100,7 @@ Tuner/
 ├── PLAN.md              # Порядок выполнения и DoD
 ├── RECOMMENDATIONS.md   # Приоритизированный план исправлений
 ├── RESEARCH-100-PITCH-REPOSITORIES.md # External evidence + новые X# hypotheses
+├── RESEARCH-250-PITCH-SOURCES.md # Source-level разбор + статьи, патенты, форумы
 ├── RESEARCH-473-MUSIC-REPOSITORIES.md # Competitor scan + финальные 50 G# proposals
 ├── TUNER-PIPELINE.md    # Фактическая и целевая блок-схемы определения pitch
 └── README.md
