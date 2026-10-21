@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "app_id": "turner",
+  "from_revision": 3,
+  "canonical_tag": "turner-v0.1.13-r4",
+  "canonical_manifest_sha256": "26ad4b24cb7d0d166c7c2a907ee04c624fcb8a6bd537ef138d02f1c1cef42b80"
+}
