@@ -1,0 +1,40 @@
+name: Build Tuner Compact for Intel
+
+# This workflow only builds a downloadable artifact when explicitly started.
+# It does not publish releases or change tags.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup target add --toolchain 1.96.0 x86_64-apple-darwin
+
+      - name: Run native tuner tests on macOS Intel
+        run: rustup run 1.96.0 cargo test --locked -p guitar-tuner-egui
+
+      - name: Build and verify the Big Sur package
+        run: bash scripts/build-compact-macos.command
+
+      - name: Upload the application ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tuner-Compact-macos-Intel
+          path: compact-builds/*/Tuner-Compact-*-macos-x86_64.app.zip
+          if-no-files-found: error
+          retention-days: 14
