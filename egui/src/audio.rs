@@ -89,6 +89,18 @@ enum WorkerEvent {
 }
 
 impl AudioManager {
+    #[cfg(test)]
+    pub(crate) fn active_input_probe() -> (Self, impl Fn() -> bool) {
+        // Observe UI requests without touching a native device. This permits
+        // language-switch regression tests while the input is marked active.
+        let (commands, receiver) = mpsc::channel();
+        let mut audio = Self::default();
+        audio.commands = Some(commands);
+        audio.input_status = InputStatus::Running;
+        audio.input_cancelled = Some(Arc::new(AtomicBool::new(false)));
+        (audio, move || receiver.try_recv().is_ok())
+    }
+
     fn ensure_worker(&mut self) -> Result<(), String> {
         if self.commands.is_none() {
             self.spawn_worker(|events| NativeBackend { events })?;

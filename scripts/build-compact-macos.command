@@ -112,6 +112,17 @@ microphone_description="$("$PLIST_BUDDY" -c 'Print :NSMicrophoneUsageDescription
 "$PLIST_BUDDY" -c "Set :CFBundleName $APP_NAME" "$plist"
 "$PLIST_BUDDY" -c "Set :CFBundleIdentifier $BUNDLE_IDENTIFIER" "$plist"
 "$PLIST_BUDDY" -c "Set :CFBundleVersion ${COMPACT_REVISION}" "$plist"
+"$PLIST_BUDDY" -c "Set :CFBundleDevelopmentRegion en" "$plist"
+"$PLIST_BUDDY" -c "Delete :CFBundleLocalizations" "$plist" 2>/dev/null || true
+"$PLIST_BUDDY" -c "Add :CFBundleLocalizations array" "$plist"
+"$PLIST_BUDDY" -c "Add :CFBundleLocalizations:0 string en" "$plist"
+"$PLIST_BUDDY" -c "Add :CFBundleLocalizations:1 string es" "$plist"
+for language in en es; do
+  localized_resources="$app/Contents/Resources/$language.lproj"
+  mkdir -p "$localized_resources"
+  cp "$ROOT/assets/localizations/$language.lproj/InfoPlist.strings" "$localized_resources/InfoPlist.strings"
+  /usr/bin/plutil -lint "$localized_resources/InfoPlist.strings"
+done
 "$PLIST_BUDDY" -c "Set :LSMinimumSystemVersion $MINIMUM_MACOS" "$plist" 2>/dev/null \
   || "$PLIST_BUDDY" -c "Add :LSMinimumSystemVersion string $MINIMUM_MACOS" "$plist"
 /usr/bin/plutil -lint "$plist"
@@ -143,7 +154,8 @@ zip_path="$stage/$zip_name"
 unzip -tq "$zip_path"
 archive_entries="$(unzip -Z1 "$zip_path")"
 for entry in Contents/Info.plist Contents/MacOS/guitar-tuner-egui Contents/Resources/icon.icns \
-  Contents/Resources/Licenses/Tuner-MIT.txt Contents/Resources/Licenses/CPAL-Apache-2.0.txt; do
+  Contents/Resources/Licenses/Tuner-MIT.txt Contents/Resources/Licenses/CPAL-Apache-2.0.txt \
+  Contents/Resources/en.lproj/InfoPlist.strings Contents/Resources/es.lproj/InfoPlist.strings; do
   grep -Fx "$APP_NAME.app/$entry" <<< "$archive_entries" >/dev/null \
     || fail "Falta $entry en el ZIP final."
 done

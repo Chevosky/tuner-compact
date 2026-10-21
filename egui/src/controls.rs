@@ -1,10 +1,16 @@
 //! Compact controls drawn with egui geometry and the application's own fonts.
 
 use crate::audio::InputStatus;
+use crate::i18n::Language;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke};
 use pitch_core::{get_note_display, Tuning};
 
-pub(super) fn microphone_button(ui: &mut egui::Ui, status: InputStatus, device: &str) -> Response {
+pub(super) fn microphone_button(
+    ui: &mut egui::Ui,
+    status: InputStatus,
+    device: &str,
+    language: Language,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 28.0), Sense::click());
     let color = match status {
         InputStatus::Running => Color32::from_rgb(112, 220, 122),
@@ -72,23 +78,38 @@ pub(super) fn microphone_button(ui: &mut egui::Ui, status: InputStatus, device: 
         stroke,
     ));
     let (state, action) = match status {
-        InputStatus::Running => ("Micrófono activo", "Clic para silenciar"),
-        InputStatus::Starting => ("Iniciando micrófono…", "Clic para cancelar"),
-        InputStatus::Stopping => (
-            "Micrófono silenciado; cerrando entrada…",
-            "Clic para volver a escuchar",
+        InputStatus::Running => (
+            language.text("Micrófono activo", "Microphone active"),
+            language.text("Clic para silenciar", "Click to mute"),
         ),
-        InputStatus::Stopped => ("Micrófono en pausa", "Clic para escuchar"),
+        InputStatus::Starting => (
+            language.text("Iniciando micrófono…", "Starting microphone…"),
+            language.text("Clic para cancelar", "Click to cancel"),
+        ),
+        InputStatus::Stopping => (
+            language.text(
+                "Micrófono silenciado; cerrando entrada…",
+                "Microphone muted; closing input…",
+            ),
+            language.text("Clic para volver a escuchar", "Click to listen again"),
+        ),
+        InputStatus::Stopped => (
+            language.text("Micrófono en pausa", "Microphone paused"),
+            language.text("Clic para escuchar", "Click to listen"),
+        ),
     };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, format!("{state}. {action}"))
     });
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(format!("{state}\n{device}\n{action} · Espacio / M"))
+        .on_hover_text(format!(
+            "{state}\n{device}\n{action} · {} / M",
+            language.text("Espacio", "Space")
+        ))
 }
 
-pub(super) fn stop_tone_button(ui: &mut egui::Ui) -> Response {
+pub(super) fn stop_tone_button(ui: &mut egui::Ui, language: Language) -> Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
     let color = Color32::from_rgb(132, 218, 249);
     paint_icon_background(ui, rect, &response, color);
@@ -98,11 +119,19 @@ pub(super) fn stop_tone_button(ui: &mut egui::Ui) -> Response {
         color,
     );
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Detener tono de referencia")
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            language.text("Detener tono de referencia", "Stop reference tone"),
+        )
     });
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Tono de referencia activo\nClic para detener · R")
+        .on_hover_text(language.text(
+            "Tono de referencia activo
+Clic para detener · R",
+            "Reference tone playing
+Click to stop · R",
+        ))
 }
 
 fn paint_icon_background(ui: &egui::Ui, rect: Rect, response: &Response, color: Color32) {
@@ -136,14 +165,15 @@ impl PresetSelector {
         tunings: &[Tuning],
         selected: &mut usize,
         max_width: f32,
+        language: Language,
     ) {
         let popup_id = ui.make_persistent_id(id);
         let was_open = ui.memory(|memory| memory.is_popup_open(popup_id));
         let name = tunings
             .get(*selected)
-            .map(label)
-            .unwrap_or("Elegir afinación");
-        let response = preset_button(ui, name, max_width, was_open);
+            .map(|tuning| label(tuning, language))
+            .unwrap_or(language.text("Elegir afinación", "Choose a tuning"));
+        let response = preset_button(ui, name, max_width, was_open, language);
         let opened = response.clicked() && !was_open;
         if response.clicked() {
             ui.memory_mut(|memory| memory.toggle_popup(popup_id));
@@ -168,80 +198,94 @@ impl PresetSelector {
         let width = (screen.width() - 40.0).clamp(230.0, 360.0);
         let current_group = tunings.get(*selected).map(group_index).unwrap_or(0);
         let mut choice = None;
-        let popup =
-            egui::Area::new(popup_id)
-                .order(egui::Order::Foreground)
-                .fixed_pos(position)
-                .pivot(if opens_above {
-                    Align2::LEFT_BOTTOM
-                } else {
-                    Align2::LEFT_TOP
-                })
-                .constrain(true)
-                .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style())
-                        .fill(Color32::from_rgb(21, 28, 24))
-                        .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 56)))
-                        .rounding(7.0)
-                        .inner_margin(10.0)
-                        .show(ui, |ui| {
-                            ui.set_width(width);
-                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
-                            ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
-                            ui.spacing_mut().interact_size.y = 25.0;
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Afinación").strong());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.weak(format!("{} presets", tunings.len()));
-                                    },
-                                );
-                            });
-                            let search = ui.add(
-                                egui::TextEdit::singleline(&mut self.search)
-                                    .id(popup_id.with("search"))
-                                    .hint_text("Buscar afinación o instrumento…")
-                                    .desired_width(f32::INFINITY)
-                                    .margin(egui::vec2(7.0, 5.0)),
+        let popup = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(position)
+            .pivot(if opens_above {
+                Align2::LEFT_BOTTOM
+            } else {
+                Align2::LEFT_TOP
+            })
+            .constrain(true)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(Color32::from_rgb(21, 28, 24))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 56)))
+                    .rounding(7.0)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 5.0);
+                        ui.spacing_mut().button_padding = egui::vec2(7.0, 4.0);
+                        ui.spacing_mut().interact_size.y = 25.0;
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(language.text("Afinación", "Tuning")).strong(),
                             );
-                            if opened {
-                                search.request_focus();
-                            }
-                            let query = normalize(self.search.trim());
-                            let matches: Vec<usize> = tunings
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(index, tuning)| {
-                                    matches_query(tuning, &query).then_some(index)
-                                })
-                                .collect();
-                            egui::ScrollArea::vertical()
-                                .id_source(popup_id.with("presets"))
-                                .max_height((height - 65.0).max(65.0))
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    if matches.is_empty() {
-                                        ui.weak("No hay afinaciones que coincidan.");
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.weak(format!(
+                                        "{} {}",
+                                        tunings.len(),
+                                        language.text("afinaciones", "presets")
+                                    ));
+                                },
+                            );
+                        });
+                        let search = ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .id(popup_id.with("search"))
+                                .hint_text(language.text(
+                                    "Buscar afinación o instrumento…",
+                                    "Search tunings or instruments…",
+                                ))
+                                .desired_width(f32::INFINITY)
+                                .margin(egui::vec2(7.0, 5.0)),
+                        );
+                        if opened {
+                            search.request_focus();
+                        }
+                        let query = normalize(self.search.trim());
+                        let matches: Vec<usize> = tunings
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, tuning)| {
+                                matches_query(tuning, &query).then_some(index)
+                            })
+                            .collect();
+                        egui::ScrollArea::vertical()
+                            .id_source(popup_id.with("presets"))
+                            .max_height((height - 65.0).max(65.0))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if matches.is_empty() {
+                                    ui.weak(language.text(
+                                        "No hay afinaciones que coincidan.",
+                                        "No matching tunings.",
+                                    ));
+                                }
+                                for (group, (spanish, english, _)) in GROUPS.iter().enumerate() {
+                                    let title = language.text(spanish, english);
+                                    let indices: Vec<usize> = matches
+                                        .iter()
+                                        .copied()
+                                        .filter(|index| group_index(&tunings[*index]) == group)
+                                        .collect();
+                                    if indices.is_empty() {
+                                        continue;
                                     }
-                                    for (group, (title, _)) in GROUPS.iter().enumerate() {
-                                        let indices: Vec<usize> = matches
-                                            .iter()
-                                            .copied()
-                                            .filter(|index| group_index(&tunings[*index]) == group)
-                                            .collect();
-                                        if indices.is_empty() {
-                                            continue;
-                                        }
-                                        if query.is_empty() {
-                                            egui::CollapsingHeader::new(format!(
-                                                "{title} · {}",
-                                                indices.len()
-                                            ))
-                                            .id_source(popup_id.with(group))
-                                            .default_open(group == current_group)
-                                            .open(opened.then_some(group == current_group))
-                                            .show_unindented(ui, |ui| {
+                                    if query.is_empty() {
+                                        egui::CollapsingHeader::new(format!(
+                                            "{title} · {}",
+                                            indices.len()
+                                        ))
+                                        .id_source(popup_id.with(group))
+                                        .default_open(group == current_group)
+                                        .open(opened.then_some(group == current_group))
+                                        .show_unindented(
+                                            ui,
+                                            |ui| {
                                                 preset_rows(
                                                     ui,
                                                     tunings,
@@ -249,38 +293,41 @@ impl PresetSelector {
                                                     *selected,
                                                     &mut choice,
                                                     opened,
+                                                    language,
                                                 );
-                                            });
-                                        } else {
-                                            ui.label(
-                                                egui::RichText::new(*title)
-                                                    .small()
-                                                    .color(Color32::from_rgb(135, 167, 144)),
-                                            );
-                                            preset_rows(
-                                                ui,
-                                                tunings,
-                                                &indices,
-                                                *selected,
-                                                &mut choice,
-                                                false,
-                                            );
-                                        }
+                                            },
+                                        );
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new(title)
+                                                .small()
+                                                .color(Color32::from_rgb(135, 167, 144)),
+                                        );
+                                        preset_rows(
+                                            ui,
+                                            tunings,
+                                            &indices,
+                                            *selected,
+                                            &mut choice,
+                                            false,
+                                            language,
+                                        );
                                     }
-                                });
-                            if (search.has_focus() || search.lost_focus())
-                                && matches.len() == 1
-                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                            {
-                                choice = matches.first().copied();
-                            }
-                            if choice.is_some()
-                                || ui.input(|input| input.key_pressed(egui::Key::Escape))
-                            {
-                                search.surrender_focus();
-                            }
-                        });
-                });
+                                }
+                            });
+                        if (search.has_focus() || search.lost_focus())
+                            && matches.len() == 1
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                        {
+                            choice = matches.first().copied();
+                        }
+                        if choice.is_some()
+                            || ui.input(|input| input.key_pressed(egui::Key::Escape))
+                        {
+                            search.surrender_focus();
+                        }
+                    });
+            });
         if let Some(index) = choice {
             // Selection always refers to the original vector and persisted index.
             *selected = index;
@@ -296,7 +343,13 @@ impl PresetSelector {
     }
 }
 
-fn preset_button(ui: &mut egui::Ui, name: &str, max_width: f32, open: bool) -> Response {
+fn preset_button(
+    ui: &mut egui::Ui,
+    name: &str,
+    max_width: f32,
+    open: bool,
+    language: Language,
+) -> Response {
     let font = FontId::proportional(13.0);
     let color = Color32::from_rgb(181, 199, 185);
     let text_width = ui
@@ -331,7 +384,11 @@ fn preset_button(ui: &mut egui::Ui, name: &str, max_width: f32, open: bool) -> R
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
-            format!("Afinación: {name}. Elegir otra afinación"),
+            format!(
+                "{}: {name}. {}",
+                language.text("Afinación", "Tuning"),
+                language.text("Elegir otra afinación", "Choose another tuning")
+            ),
         )
     });
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -339,7 +396,11 @@ fn preset_button(ui: &mut egui::Ui, name: &str, max_width: f32, open: bool) -> R
         response
     } else {
         response.on_hover_text(format!(
-            "{name}\nElegir afinación · buscar por nombre o instrumento"
+            "{name}\n{}",
+            language.text(
+                "Elegir afinación · buscar por nombre o instrumento",
+                "Choose a tuning · search by name or instrument"
+            )
         ))
     }
 }
@@ -351,10 +412,11 @@ fn preset_rows(
     selected: usize,
     choice: &mut Option<usize>,
     reveal_selected: bool,
+    language: Language,
 ) {
     for &index in indices {
         let tuning = &tunings[index];
-        let text = super::fit_label(ui, label(tuning), ui.available_width() - 18.0);
+        let text = super::fit_label(ui, label(tuning, language), ui.available_width() - 18.0);
         let response = ui
             .add_sized(
                 [ui.available_width(), 25.0],
@@ -362,7 +424,7 @@ fn preset_rows(
             )
             .on_hover_text(format!(
                 "{}\n{}",
-                label(tuning),
+                label(tuning, language),
                 tuning
                     .strings
                     .iter()
@@ -379,37 +441,102 @@ fn preset_rows(
     }
 }
 
-fn label(tuning: &Tuning) -> &str {
+fn label(tuning: &Tuning, language: Language) -> &str {
     if tuning.strings.is_empty() {
-        "Cromático · todos los instrumentos"
-    } else {
-        tuning.name
+        return language.text(
+            "Cromático · todos los instrumentos",
+            "Chromatic · all instruments",
+        );
+    }
+    if language == Language::English {
+        return tuning.name;
+    }
+    match tuning.name {
+        "Standard (EADGBE)" => "Estándar (EADGBE)",
+        "Drop D (DADGBE)" => "Drop D (DADGBE)",
+        "DADGAD" => "DADGAD",
+        "Open G (DGDGBD)" => "Abierta G (DGDGBD)",
+        "Open D (DADF#AD)" => "Abierta D (DADF#AD)",
+        "Drop C (CGCFAD)" => "Drop C (CGCFAD)",
+        "Half Step Down (D# G# C# F# A# D#)" => "Medio tono abajo (D# G# C# F# A# D#)",
+        "Open E (EBEG#BE)" => "Abierta E (EBEG#BE)",
+        "Drop B (BF#BEG#C#)" => "Drop B (BF#BEG#C#)",
+        "Open C (CGCGCE)" => "Abierta C (CGCGCE)",
+        "Open A (EAC#EAE)" => "Abierta A (EAC#EAE)",
+        "Full Step Down (DGCFAD)" => "Un tono abajo (DGCFAD)",
+        "Open Gm (DGDGA#D)" => "Abierta Gm (DGDGA#D)",
+        "Nashville High Strung (EADGBE)" => "Nashville · cuerdas agudas (EADGBE)",
+        "7-string Standard (BEADGBE)" => "7 cuerdas · estándar (BEADGBE)",
+        "7-string Drop A (AEADGBE)" => "7 cuerdas · Drop A (AEADGBE)",
+        "Baritone Standard (BEADF#B)" => "Barítono · estándar (BEADF#B)",
+        "Baritone Drop A (AEADF#B)" => "Barítono · Drop A (AEADF#B)",
+        "12-string Standard (E/e A/a D/d G/g B/B E/E)" => {
+            "12 cuerdas · estándar (E/e A/a D/d G/g B/B E/E)"
+        }
+        "Bass Standard (EADG)" => "Bajo · estándar (EADG)",
+        "Bass Drop D (DADG)" => "Bajo · Drop D (DADG)",
+        "Bass Half Step Down (D#G#C#F#)" => "Bajo · medio tono abajo (D#G#C#F#)",
+        "Bass 5-string (BEADG)" => "Bajo de 5 cuerdas (BEADG)",
+        "Bass 6-string (BEADGC)" => "Bajo de 6 cuerdas (BEADGC)",
+        "Ukulele Standard (GCEA)" => "Ukelele estándar (GCEA)",
+        "Ukulele Low G (GCEA)" => "Ukelele · G grave (GCEA)",
+        "Baritone Ukulele (DGBE)" => "Ukelele barítono (DGBE)",
+        "Mandolin Standard (GDAE)" => "Mandolina estándar (GDAE)",
+        "Banjo Open G (gDGBD)" => "Banjo · abierta G (gDGBD)",
+        "Violin Standard (GDAE)" => "Violín estándar (GDAE)",
+        "Viola Standard (CGDA)" => "Viola estándar (CGDA)",
+        "Cello Standard (CGDA)" => "Violonchelo estándar (CGDA)",
+        "Charango Standard (GCEAE)" => "Charango estándar (GCEAE)",
+        "Ronroco Argentine (DGBEB)" => "Ronroco argentino (DGBEB)",
+        _ => tuning.name,
     }
 }
 
-// The native Tuning type exposes its name and notes, but not registry instrument
-// metadata. These presentation groups never reorder or recreate its presets.
-const GROUPS: [(&str, &str); 14] = [
-    ("Guitarra", "guitar 6 cuerdas"),
-    ("Guitarra de 7 cuerdas", "guitar 7 string"),
-    ("Guitarra barítono", "baritone guitar"),
-    ("Guitarra de 12 cuerdas", "guitar 12 string"),
-    ("Bajo", "bass"),
-    ("Ukelele", "ukulele"),
-    ("Ukelele barítono", "baritone ukulele"),
-    ("Mandolina", "mandolin"),
-    ("Banjo", "banjo"),
-    ("Violín", "violin"),
-    ("Viola", "viola"),
-    ("Violonchelo", "cello"),
-    ("Cromático y voz", "chromatic vocal todos los instrumentos"),
-    ("Otros instrumentos", "other"),
+// Stable presentation groups, independent of locale. Canonical registry names
+// and persisted preset indices never change when the language changes.
+const GROUPS: [(&str, &str, &str); 16] = [
+    ("Guitarra", "Guitar", "guitar 6 cuerdas strings"),
+    (
+        "Guitarra de 7 cuerdas",
+        "7-string guitar",
+        "guitar 7 string",
+    ),
+    ("Guitarra barítono", "Baritone guitar", "baritone guitar"),
+    (
+        "Guitarra de 12 cuerdas",
+        "12-string guitar",
+        "guitar 12 string",
+    ),
+    ("Bajo", "Bass", "bass"),
+    ("Ukelele", "Ukulele", "ukulele"),
+    ("Ukelele barítono", "Baritone ukulele", "baritone ukulele"),
+    ("Mandolina", "Mandolin", "mandolin"),
+    ("Banjo", "Banjo", "banjo"),
+    ("Violín", "Violin", "violin"),
+    ("Viola", "Viola", "viola"),
+    ("Violonchelo", "Cello", "cello"),
+    (
+        "Cromático y voz",
+        "Chromatic and voice",
+        "chromatic vocal voice todos los instrumentos all instruments",
+    ),
+    ("Otros instrumentos", "Other instruments", "other"),
+    ("Charango", "Charango", "charango andino andean"),
+    (
+        "Ronroco",
+        "Ronroco",
+        "ronroco charangón charangon argentino argentine argentina",
+    ),
 ];
 
 fn group_index(tuning: &Tuning) -> usize {
     let name = tuning.name;
     if tuning.strings.is_empty() {
         12
+    } else if name.starts_with("Charango ") {
+        14
+    } else if name.starts_with("Ronroco ") {
+        15
     } else if name.starts_with("7-string ") {
         1
     } else if name.starts_with("12-string ") {
@@ -452,7 +579,14 @@ fn group_index(tuning: &Tuning) -> usize {
 
 fn matches_query(tuning: &Tuning, query: &str) -> bool {
     let group = GROUPS[group_index(tuning)];
-    let haystack = normalize(&format!("{} {} {}", tuning.name, group.0, group.1));
+    let haystack = normalize(&format!(
+        "{} {} {} {} {}",
+        tuning.name,
+        label(tuning, Language::Spanish),
+        group.0,
+        group.1,
+        group.2
+    ));
     query.split_whitespace().all(|word| haystack.contains(word))
 }
 
@@ -475,6 +609,43 @@ fn normalize(text: &str) -> String {
 #[cfg(test)]
 mod selector_regression_tests {
     use super::*;
+
+    #[test]
+    fn localized_search_preserves_canonical_presets_and_andean_groups() {
+        let tunings = pitch_core::get_tunings();
+        let original_names: Vec<_> = tunings.iter().map(|tuning| tuning.name).collect();
+        let violin = tunings
+            .iter()
+            .position(|tuning| tuning.name == "Violin Standard (GDAE)")
+            .unwrap();
+        for query in ["violín estándar", "violin standard", "violín standard"] {
+            let matches: Vec<_> = tunings
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tuning)| {
+                    matches_query(tuning, &normalize(query)).then_some(index)
+                })
+                .collect();
+            assert_eq!(matches, vec![violin]);
+        }
+        for (name, group, query) in [
+            ("Charango Standard (GCEAE)", 14, "charango estándar"),
+            ("Ronroco Argentine (DGBEB)", 15, "charangón argentino"),
+        ] {
+            let tuning = tunings.iter().find(|tuning| tuning.name == name).unwrap();
+            assert_eq!(group_index(tuning), group);
+            assert!(matches_query(tuning, &normalize(query)));
+            assert!(matches_query(tuning, &normalize(name)));
+            assert_ne!(
+                label(tuning, Language::Spanish),
+                label(tuning, Language::English)
+            );
+        }
+        assert_eq!(
+            tunings.iter().map(|tuning| tuning.name).collect::<Vec<_>>(),
+            original_names
+        );
+    }
 
     fn widget_center(
         output: &egui::FullOutput,
@@ -541,7 +712,14 @@ mod selector_regression_tests {
             };
             let output = context.run(input, |context| {
                 egui::CentralPanel::default().show(context, |ui| {
-                    selector.show(ui, "enter-regression", &tunings, &mut selected, 300.0);
+                    selector.show(
+                        ui,
+                        "enter-regression",
+                        &tunings,
+                        &mut selected,
+                        300.0,
+                        Language::Spanish,
+                    );
                 });
             });
             frame += 1;

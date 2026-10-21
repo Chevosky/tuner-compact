@@ -1,3 +1,4 @@
+use crate::i18n::Language;
 use crate::state::TunerViewState;
 use eframe::egui;
 use std::collections::VecDeque;
@@ -141,12 +142,13 @@ impl VisualizationHistory {
         ui: &mut egui::Ui,
         state: &TunerViewState,
         sample_rate: f32,
+        language: Language,
     ) {
-        draw_spectrum(ui, &state.spectrum, state.frequency, sample_rate);
+        draw_spectrum(ui, &state.spectrum, state.frequency, sample_rate, language);
     }
 
-    pub(crate) fn draw_spectrogram(&mut self, ui: &mut egui::Ui) {
-        draw_spectrogram(ui, &mut self.spectrogram);
+    pub(crate) fn draw_spectrogram(&mut self, ui: &mut egui::Ui, language: Language) {
+        draw_spectrogram(ui, &mut self.spectrogram, language);
     }
 }
 
@@ -233,12 +235,18 @@ fn draw_cents_history(ui: &mut egui::Ui, history: &VecDeque<f32>) {
     ));
 }
 
-fn draw_spectrum(ui: &mut egui::Ui, spectrum: &[f32], frequency: Option<f32>, sample_rate: f32) {
+fn draw_spectrum(
+    ui: &mut egui::Ui,
+    spectrum: &[f32],
+    frequency: Option<f32>,
+    sample_rate: f32,
+    language: Language,
+) {
     if spectrum.is_empty() {
         return;
     }
     ui.add_space(4.0);
-    ui.label("Spectrum");
+    ui.label(language.text("Espectro", "Spectrum"));
     let bin_count = spectrum.len().min(200);
     let size = egui::vec2(ui.available_width().min(600.0), 84.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -281,12 +289,12 @@ fn spectrogram_color(value: f32) -> egui::Color32 {
     )
 }
 
-fn draw_spectrogram(ui: &mut egui::Ui, spectrogram: &mut SpectrogramTexture) {
+fn draw_spectrogram(ui: &mut egui::Ui, spectrogram: &mut SpectrogramTexture, language: Language) {
     if spectrogram.len == 0 {
         return;
     }
     ui.add_space(4.0);
-    ui.label("Spectrogram");
+    ui.label(language.text("Espectrograma", "Spectrogram"));
     let size = egui::vec2(ui.available_width().min(520.0), 72.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let texture_id = spectrogram.upload(ui.ctx());

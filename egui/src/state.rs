@@ -1,4 +1,5 @@
 use crate::diagnostics::signal_health_codes;
+use crate::i18n::{Language, LocalizedMessage};
 use pitch_core::{get_note_display, DetectionFrame, Note};
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +14,7 @@ pub(crate) struct TunerViewState {
     /// Stream-loss recovery telemetry codes from the native backend
     /// (backend-stream-lost / backend-recovery-*).
     pub(crate) backend_diagnostics: Vec<&'static str>,
-    pub(crate) error: Option<String>,
+    pub(crate) error: Option<LocalizedMessage>,
     pub(crate) frame_id: u64,
     pub(crate) frequency: Option<f32>,
     pub(crate) in_tune: bool,
@@ -95,7 +96,10 @@ pub(crate) fn apply_recovery_code(state: &mut TunerViewState, code: &'static str
         _ => return,
     };
     if code == BACKEND_RECOVERY_FAILED {
-        state.error = Some(diagnostic_hint(code).to_string());
+        state.error = Some(LocalizedMessage::new(
+            diagnostic_hint(code, Language::Spanish),
+            diagnostic_hint(code, Language::English),
+        ));
     }
 }
 

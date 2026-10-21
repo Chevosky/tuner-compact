@@ -3,6 +3,7 @@
 //! Codes and thresholds here belong to the native client and are tested here;
 //! the web client has an independent presentation contract.
 
+use crate::i18n::Language;
 use pitch_core::{FIXED_GATE_PEAK, FIXED_GATE_RMS};
 
 pub(crate) const SIGNAL_SILENT: &str = "signal-silent";
@@ -89,21 +90,19 @@ fn goertzel_amplitude(samples: &[f32], sample_rate: f32, frequency: f32) -> f32 
     2.0 * power.max(0.0).sqrt() / samples.len() as f32
 }
 
-/// Short actionable hint for a stable diagnostic code (egui has no l10n
-/// layer; the web shell renders localized hints for the same codes).
-pub(crate) fn diagnostic_hint(code: &str) -> &'static str {
+/// Short actionable hint rendered in the current UI language. Codes stay
+/// stable across language changes and never depend on audio-thread state.
+pub(crate) fn diagnostic_hint(code: &str, language: Language) -> &'static str {
     match code {
-        SIGNAL_SILENT => "no input signal — check the input and gain",
-        SIGNAL_CLIPPING => "signal hits full scale — lower the input volume",
-        SIGNAL_DC_OFFSET => "DC offset — check the input cable and connector",
-        SIGNAL_HUM => "mains hum — move away from hum sources, check grounding",
-        BACKEND_STREAM_LOST => "audio stream lost — reconnecting the input…",
-        BACKEND_RECOVERY_ATTEMPTED => "reconnecting the audio input…",
-        BACKEND_RECOVERY_SUCCEEDED => "audio input reconnected",
-        BACKEND_RECOVERY_FAILED => {
-            "could not restore the audio input — reconnect the device and restart listening"
-        }
-        _ => "see diagnostics contract",
+        SIGNAL_SILENT => language.text("sin señal de entrada — revisá la entrada y la ganancia", "no input signal — check the input and gain"),
+        SIGNAL_CLIPPING => language.text("la señal satura — bajá el volumen de entrada", "signal hits full scale — lower the input volume"),
+        SIGNAL_DC_OFFSET => language.text("componente continua — revisá el cable y el conector de entrada", "DC offset — check the input cable and connector"),
+        SIGNAL_HUM => language.text("zumbido eléctrico — alejate de fuentes de ruido y revisá la conexión a tierra", "mains hum — move away from hum sources, check grounding"),
+        BACKEND_STREAM_LOST => language.text("se perdió el audio — reconectando la entrada…", "audio stream lost — reconnecting the input…"),
+        BACKEND_RECOVERY_ATTEMPTED => language.text("reconectando la entrada de audio…", "reconnecting the audio input…"),
+        BACKEND_RECOVERY_SUCCEEDED => language.text("entrada de audio reconectada", "audio input reconnected"),
+        BACKEND_RECOVERY_FAILED => language.text("no se pudo recuperar la entrada de audio — reconectá el dispositivo y volvé a escuchar", "could not restore the audio input — reconnect the device and restart listening"),
+        _ => language.text("consultá el código de diagnóstico", "see the diagnostic code"),
     }
 }
 

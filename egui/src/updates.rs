@@ -2,10 +2,12 @@
 //! The ZIP supplies an app and data only; the installer is this application's
 //! own fixed script. A checksum verifies transfer integrity, not an independent
 //! publisher signature: the public GitHub repository remains the trust source.
+use crate::i18n::LocalizedMessage;
 use crate::version::{APP_VERSION, COMPACT_REVISION};
 use eframe::egui;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -53,7 +55,7 @@ pub(crate) enum UpdateStatus {
     Preparing,
     ReadyToRestart,
     Cancelled,
-    Error(String),
+    Error(LocalizedMessage),
 }
 
 pub(crate) struct UpdateService {
@@ -92,16 +94,19 @@ enum Event {
 #[derive(Debug)]
 enum Failure {
     Cancelled,
-    Message(String),
+    Message(LocalizedMessage),
 }
 type Result<T> = std::result::Result<T, Failure>;
 impl From<std::io::Error> for Failure {
     fn from(error: std::io::Error) -> Self {
-        Self::Message(error.to_string())
+        Self::Message(LocalizedMessage::new(
+            format!("No se pudo completar la operación de actualización: {error}"),
+            format!("Could not complete the update operation: {error}"),
+        ))
     }
 }
-fn fail(message: impl Into<String>) -> Failure {
-    Failure::Message(message.into())
+fn fail(spanish: impl Into<Cow<'static, str>>, english: impl Into<Cow<'static, str>>) -> Failure {
+    Failure::Message(LocalizedMessage::new(spanish, english))
 }
 fn cancelled(token: &AtomicBool) -> Result<()> {
     if token.load(Ordering::Acquire) {
@@ -181,8 +186,10 @@ impl UpdateService {
                 })
             }
             Err(error) => {
-                self.status =
-                    UpdateStatus::Error(format!("No se pudo iniciar la actualización: {error}"))
+                self.status = UpdateStatus::Error(LocalizedMessage::new(
+                    format!("No se pudo iniciar la actualización: {error}"),
+                    format!("Could not start the update: {error}"),
+                ))
             }
         }
     }
@@ -259,9 +266,10 @@ impl UpdateService {
                         {
                             job.handoff_authorized = true;
                         } else {
-                            self.status = UpdateStatus::Error(
-                                "El instalador dejó de responder antes del reinicio.".into(),
-                            );
+                            self.status = UpdateStatus::Error(LocalizedMessage::new(
+                                "El instalador dejó de responder antes del reinicio.",
+                                "The installer stopped responding before restart.",
+                            ));
                             finished = true;
                         }
                     }
@@ -282,8 +290,10 @@ impl UpdateService {
             }
         }
         if disconnected && !finished {
-            self.status =
-                UpdateStatus::Error("La tarea de actualización terminó sin un resultado.".into());
+            self.status = UpdateStatus::Error(LocalizedMessage::new(
+                "La tarea de actualización terminó sin un resultado.",
+                "The update task ended without a result.",
+            ));
             finished = true;
         }
         if finished {
@@ -323,11 +333,14 @@ fn parse_version(value: &str) -> Result<Version> {
                 || (part.len() > 1 && part.starts_with('0'))
         })
     {
-        return Err(fail("La versión publicada no tiene un formato válido."));
+        return Err(fail(
+            "La versión publicada no tiene un formato válido.",
+            "The published version has an invalid format.",
+        ));
     }
     let number = |part: &str| {
         part.parse::<u32>()
-            .map_err(|_| fail("Versión fuera de rango."))
+            .map_err(|_| fail("Versión fuera de rango.", "Version out of range."))
     };
     Ok(Version(
         number(parts[0])?,
@@ -360,20 +373,28 @@ struct FeedRelease {
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {
-    serde_json::from_slice(bytes)
-        .map_err(|_| fail("GitHub devolvió datos de actualización inválidos."))
+    serde_json::from_slice(bytes).map_err(|_| {
+        fail(
+            "GitHub devolvió datos de actualización inválidos.",
+            "GitHub returned invalid update data.",
+        )
+    })
 }
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
-    value
-        .get(name)
-        .and_then(Value::as_str)
-        .ok_or_else(|| fail(format!("Falta el campo de actualización {name}.")))
+    value.get(name).and_then(Value::as_str).ok_or_else(|| {
+        fail(
+            format!("Falta el campo de actualización {name}."),
+            format!("The update field {name} is missing."),
+        )
+    })
 }
 fn number(value: &Value, name: &str) -> Result<u64> {
-    value
-        .get(name)
-        .and_then(Value::as_u64)
-        .ok_or_else(|| fail(format!("El campo {name} debe ser un entero.")))
+    value.get(name).and_then(Value::as_u64).ok_or_else(|| {
+        fail(
+            format!("El campo {name} debe ser un entero."),
+            format!("The field {name} must be an integer."),
+        )
+    })
 }
 fn asset_url(tag: &str, asset: &str) -> String {
     format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{asset}")
@@ -406,6 +427,7 @@ fn validate_selected_release(release: &Value, tag: &str) -> Result<()> {
     {
         return Err(fail(
             "La publicación no corresponde a la versión estable de Turner anunciada por el canal.",
+            "The release does not match the stable Turner version announced by the channel.",
         ));
     }
     Ok(())
@@ -415,9 +437,7 @@ fn validate_manifest_pair(feed: &Value, release_manifest: &Value) -> Result<()> 
     // advancing the stable feed. Comparing parsed JSON permits formatting
     // differences, while keeping hashes, identity and any provenance equal.
     if feed != release_manifest {
-        return Err(fail(
-            "El canal estable y el manifiesto de la publicación no coinciden. Volvé a buscar actualizaciones más tarde.",
-        ));
+        return Err(fail("El canal estable y el manifiesto de la publicación no coinciden. Volvé a buscar actualizaciones más tarde.", "The stable channel and release manifest do not match. Check for updates again later."));
     }
     Ok(())
 }
@@ -425,15 +445,21 @@ fn release_asset(release: &Value, tag: &str, name: &str, limit: u64) -> Result<(
     let assets = release
         .get("assets")
         .and_then(Value::as_array)
-        .ok_or_else(|| fail("La publicación no contiene archivos."))?;
+        .ok_or_else(|| {
+            fail(
+                "La publicación no contiene archivos.",
+                "The release contains no files.",
+            )
+        })?;
     let matches: Vec<_> = assets
         .iter()
         .filter(|a| a.get("name").and_then(Value::as_str) == Some(name))
         .collect();
     if matches.len() != 1 {
-        return Err(fail(format!(
-            "La publicación debe contener exactamente un archivo {name}."
-        )));
+        return Err(fail(
+            format!("La publicación debe contener exactamente un archivo {name}."),
+            format!("The release must contain exactly one file named {name}."),
+        ));
     }
     let asset = matches[0];
     let url = field(asset, "browser_download_url")?;
@@ -445,6 +471,7 @@ fn release_asset(release: &Value, tag: &str, name: &str, limit: u64) -> Result<(
     {
         return Err(fail(
             "El archivo publicado no cumple el origen o tamaño esperado.",
+            "The published file has an unexpected source or size.",
         ));
     }
     Ok((url.to_string(), size))
@@ -507,6 +534,7 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
         if digest != format!("sha256:{}", selected.hash) {
             return Err(fail(
                 "El hash del manifiesto no coincide con el publicado por GitHub.",
+                "The manifest hash does not match the hash published by GitHub.",
             ));
         }
     }
@@ -515,7 +543,10 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
     let checksum = temporary.path.join("checksum.txt");
     require_download(&checksum_url, &checksum, 1024, token, None, &temporary.path)?;
     if parse_checksum(&fs::read(&checksum)?, &selected.asset)? != selected.hash {
-        return Err(fail("El manifiesto y el archivo SHA256 no coinciden."));
+        return Err(fail(
+            "El manifiesto y el archivo SHA256 no coinciden.",
+            "The manifest and SHA256 file do not match.",
+        ));
     }
     cancelled(token)?;
     if selected.info.revision <= installed.revision {
@@ -524,6 +555,7 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
         if parse_version(&selected.info.version)? < parse_version(&installed.version)? {
             return Err(fail(
                 "La publicación intenta retroceder la versión instalada.",
+                "The release would downgrade the installed version.",
             ));
         }
         reporter.send(Event::Checked(Some(Candidate {
@@ -539,22 +571,28 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
 }
 
 fn parse_tag(tag: &str) -> Result<(String, u64)> {
-    let value = tag
-        .strip_prefix("turner-v")
-        .ok_or_else(|| fail("La etiqueta publicada no corresponde a Turner."))?;
-    let (version, revision) = value
-        .rsplit_once("-r")
-        .ok_or_else(|| fail("Falta la revisión de Turner."))?;
+    let value = tag.strip_prefix("turner-v").ok_or_else(|| {
+        fail(
+            "La etiqueta publicada no corresponde a Turner.",
+            "The published tag does not belong to Turner.",
+        )
+    })?;
+    let (version, revision) = value.rsplit_once("-r").ok_or_else(|| {
+        fail(
+            "Falta la revisión de Turner.",
+            "The Turner revision is missing.",
+        )
+    })?;
     parse_version(version)?;
     if revision.is_empty()
         || !revision.bytes().all(|b| b.is_ascii_digit())
         || revision.starts_with('0')
     {
-        return Err(fail("Revisión inválida."));
+        return Err(fail("Revisión inválida.", "Invalid revision."));
     }
     let revision = revision
         .parse::<u32>()
-        .map_err(|_| fail("Revisión fuera de rango."))?;
+        .map_err(|_| fail("Revisión fuera de rango.", "Revision out of range."))?;
     Ok((version.into(), revision.into()))
 }
 fn validate_manifest(
@@ -579,39 +617,57 @@ fn validate_manifest(
         ("executable", EXECUTABLE),
     ] {
         if field(manifest, key)? != expected {
-            return Err(fail(format!(
-                "El manifiesto tiene un valor inesperado en {key}."
-            )));
+            return Err(fail(
+                format!("El manifiesto tiene un valor inesperado en {key}."),
+                format!("The manifest has an unexpected value for {key}."),
+            ));
         }
     }
     if number(manifest, "schema_version")? != 1 || number(manifest, "revision")? != revision {
         return Err(fail(
             "El esquema o la revisión del manifiesto no coinciden.",
+            "The manifest schema or revision does not match.",
         ));
     }
     normalize_hash(field(manifest, "sha256")?)
 }
 fn normalize_hash(hash: &str) -> Result<String> {
     if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
-        return Err(fail("El SHA256 publicado no es válido."));
+        return Err(fail(
+            "El SHA256 publicado no es válido.",
+            "The published SHA256 is invalid.",
+        ));
     }
     Ok(hash.to_ascii_lowercase())
 }
 fn parse_checksum(bytes: &[u8], asset: &str) -> Result<String> {
-    let text =
-        std::str::from_utf8(bytes).map_err(|_| fail("El archivo SHA256 no es texto válido."))?;
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        fail(
+            "El archivo SHA256 no es texto válido.",
+            "The SHA256 file is not valid text.",
+        )
+    })?;
     let mut lines = text.lines().filter(|line| !line.trim().is_empty());
     let line = lines
         .next()
-        .ok_or_else(|| fail("El archivo SHA256 está vacío."))?;
+        .ok_or_else(|| fail("El archivo SHA256 está vacío.", "The SHA256 file is empty."))?;
     if lines.next().is_some() {
-        return Err(fail("El archivo SHA256 debe describir un único ZIP."));
+        return Err(fail(
+            "El archivo SHA256 debe describir un único ZIP.",
+            "The SHA256 file must describe a single ZIP.",
+        ));
     }
-    let (hash, name) = line
-        .split_once("  ")
-        .ok_or_else(|| fail("Formato de archivo SHA256 inesperado."))?;
+    let (hash, name) = line.split_once("  ").ok_or_else(|| {
+        fail(
+            "Formato de archivo SHA256 inesperado.",
+            "Unexpected SHA256 file format.",
+        )
+    })?;
     if name != asset {
-        return Err(fail("El SHA256 corresponde a otro archivo."));
+        return Err(fail(
+            "El SHA256 corresponde a otro archivo.",
+            "The SHA256 belongs to another file.",
+        ));
     }
     normalize_hash(hash)
 }
@@ -638,10 +694,13 @@ impl PrivateDir {
             match builder.create(&path) {
                 Ok(()) => return Ok(Self { path, keep: false }),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(fail(format!("No se puede crear la carpeta de actualización en {}: {error}. Si la app está en un volumen de sólo lectura, movela a Aplicaciones o a una carpeta propia.", parent.display()))),
+                Err(error) => return Err(fail(format!("No se puede crear la carpeta de actualización en {}: {error}. Si la app está en un volumen de sólo lectura, movela a Aplicaciones o a una carpeta propia.", parent.display()), format!("Could not create the update folder in {}: {error}. If the app is on a read-only volume, move it to Applications or a folder you own.", parent.display()))),
             }
         }
-        Err(fail("No se pudo crear una carpeta temporal privada."))
+        Err(fail(
+            "No se pudo crear una carpeta temporal privada.",
+            "Could not create a private temporary folder.",
+        ))
     }
 }
 impl Drop for PrivateDir {
@@ -684,7 +743,12 @@ fn run(
         .stdout(Stdio::from(new_file(&stdout_path)?))
         .stderr(Stdio::from(new_file(&stderr_path)?))
         .spawn()
-        .map_err(|error| fail(format!("No se pudo ejecutar {program}: {error}")))?;
+        .map_err(|error| {
+            fail(
+                format!("No se pudo ejecutar {program}: {error}"),
+                format!("Could not run {program}: {error}"),
+            )
+        })?;
     let deadline = Instant::now() + timeout;
     let mut last_progress = u64::MAX;
     loop {
@@ -714,11 +778,18 @@ fn run(
             let _ = child.kill();
             let _ = child.wait();
             cancellation?;
-            return Err(fail(if oversized_output || oversized_download {
-                "La actualización excedió el límite de tamaño permitido."
-            } else {
-                "La operación agotó su tiempo de espera. Podés volver a intentarlo."
-            }));
+            return Err(fail(
+                if oversized_output || oversized_download {
+                    "La actualización excedió el límite de tamaño permitido."
+                } else {
+                    "La operación agotó su tiempo de espera. Podés volver a intentarlo."
+                },
+                if oversized_output || oversized_download {
+                    "The update exceeded the permitted size limit."
+                } else {
+                    "The operation timed out. You can try again."
+                },
+            ));
         }
         if let Some(status) = child.try_wait()? {
             let stdout = fs::read(&stdout_path)?;
@@ -749,7 +820,10 @@ fn checked_run(
 ) -> Result<Vec<u8>> {
     let output = run(program, arguments, scratch, token, timeout, None)?;
     if !output.success {
-        return Err(fail(format!("Falló {program}: {}", output.stderr.trim())));
+        return Err(fail(
+            format!("Falló {program}: {}", output.stderr.trim()),
+            format!("{program} failed: {}", output.stderr.trim()),
+        ));
     }
     Ok(output.stdout)
 }
@@ -799,27 +873,37 @@ fn download(
         Some((destination, limit, reporter)),
     )?;
     if !output.success {
-        return Err(fail(format!(
-            "No se pudo descargar la actualización: {}",
-            output.stderr.trim()
-        )));
+        return Err(fail(
+            format!(
+                "No se pudo descargar la actualización: {}",
+                output.stderr.trim()
+            ),
+            format!("Could not download the update: {}", output.stderr.trim()),
+        ));
     }
     if fs::metadata(destination)?.len() > limit {
-        return Err(fail("El archivo descargado es demasiado grande."));
+        return Err(fail(
+            "El archivo descargado es demasiado grande.",
+            "The downloaded file is too large.",
+        ));
     }
     let status = std::str::from_utf8(&output.stdout)
         .unwrap_or("")
         .trim()
         .parse::<u16>()
-        .map_err(|_| fail("Respuesta HTTPS inesperada."))?;
+        .map_err(|_| fail("Respuesta HTTPS inesperada.", "Unexpected HTTPS response."))?;
     match status {
         200 | 404 => Ok(status),
-        403 | 429 => Err(fail(format!(
+        403 | 429 => Err(fail(
+            format!(
             "GitHub rechazó temporalmente la consulta (HTTP {status}). Probá de nuevo más tarde."
-        ))),
-        _ => Err(fail(format!(
-            "GitHub devolvió HTTP {status}; no se modificó la aplicación."
-        ))),
+        ),
+            format!("GitHub temporarily rejected the request (HTTP {status}). Try again later."),
+        )),
+        _ => Err(fail(
+            format!("GitHub devolvió HTTP {status}; no se modificó la aplicación."),
+            format!("GitHub returned HTTP {status}; the application was not modified."),
+        )),
     }
 }
 fn require_download(
@@ -833,6 +917,7 @@ fn require_download(
     if download(url, destination, limit, token, reporter, scratch)? != 200 {
         return Err(fail(
             "La publicación está incompleta: falta un archivo de actualización.",
+            "The release is incomplete: an update file is missing.",
         ));
     }
     Ok(())
@@ -849,12 +934,18 @@ fn plist_value(bundle: &Path, key: &str, scratch: &Path, token: &AtomicBool) -> 
     )?;
     String::from_utf8(value)
         .map(|value| value.trim().to_string())
-        .map_err(|_| fail("El Info.plist no contiene texto válido."))
+        .map_err(|_| {
+            fail(
+                "El Info.plist no contiene texto válido.",
+                "Info.plist does not contain valid text.",
+            )
+        })
 }
 fn locate_installed(scratch: &Path, token: &AtomicBool) -> Result<Installed> {
     if !cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         return Err(fail(
             "Las actualizaciones integradas están disponibles en la app para Mac Intel.",
+            "Built-in updates are available in the Intel Mac app.",
         ));
     }
     let executable = fs::canonicalize(std::env::current_exe()?)?;
@@ -862,7 +953,7 @@ fn locate_installed(scratch: &Path, token: &AtomicBool) -> Result<Installed> {
         .components()
         .any(|part| part.as_os_str() == "AppTranslocation")
     {
-        return Err(fail("macOS está ejecutando una copia translocada. Cerrá Turner, mové su archivo .app a Aplicaciones (o ~/Applications) y abrilo desde allí antes de actualizar."));
+        return Err(fail("macOS está ejecutando una copia translocada. Cerrá Turner, mové su archivo .app a Aplicaciones (o ~/Applications) y abrilo desde allí antes de actualizar.", "macOS is running a translocated copy. Quit Turner, move its .app to Applications (or ~/Applications), then open it from there before updating."));
     }
     let bundle = bundle_from_executable(&executable)?;
     validate_bundle(&bundle, APP_VERSION, COMPACT_REVISION, scratch, token)?;
@@ -880,13 +971,19 @@ fn bundle_from_executable(executable: &Path) -> Result<PathBuf> {
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .ok_or_else(|| fail("No se encontró el bundle de Turner."))?
+        .ok_or_else(|| {
+            fail(
+                "No se encontró el bundle de Turner.",
+                "The Turner app bundle was not found.",
+            )
+        })?
         .to_path_buf();
     if bundle.extension() != Some(OsStr::new("app"))
         || executable != bundle.join("Contents/MacOS").join(EXECUTABLE)
     {
         return Err(fail(
             "La actualización requiere ejecutar Turner desde su archivo .app.",
+            "To update, run Turner from its .app bundle.",
         ));
     }
     Ok(bundle)
@@ -907,19 +1004,24 @@ fn validate_bundle(
         ("LSMinimumSystemVersion", "11.0"),
     ] {
         if plist_value(bundle, key, scratch, token)? != expected {
-            return Err(fail(format!(
-                "La app no coincide con la identidad o versión esperada ({key})."
-            )));
+            return Err(fail(
+                format!("La app no coincide con la identidad o versión esperada ({key})."),
+                format!("The app does not match the expected identity or version ({key})."),
+            ));
         }
     }
     if plist_value(bundle, "NSMicrophoneUsageDescription", scratch, token)?.is_empty() {
-        return Err(fail("La app publicada no declara el uso del micrófono."));
+        return Err(fail(
+            "La app publicada no declara el uso del micrófono.",
+            "The published app does not declare microphone use.",
+        ));
     }
     let executable = bundle.join("Contents/MacOS").join(EXECUTABLE);
     #[cfg(unix)]
     if fs::metadata(&executable)?.permissions().mode() & 0o111 == 0 {
         return Err(fail(
             "El ejecutable publicado no tiene permiso de ejecución.",
+            "The published executable does not have execute permission.",
         ));
     }
     // Only the header and load commands are needed; do not allocate the
@@ -938,12 +1040,16 @@ fn check_tree(root: &Path, token: &AtomicBool) -> Result<()> {
         cancelled(token)?;
         entries += 1;
         if entries > MAX_ENTRIES {
-            return Err(fail("La app contiene demasiados archivos."));
+            return Err(fail(
+                "La app contiene demasiados archivos.",
+                "The app contains too many files.",
+            ));
         }
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
             return Err(fail(
                 "El paquete contiene enlaces o tipos de archivo no permitidos.",
+                "The package contains links or file types that are not permitted.",
             ));
         }
         if metadata.is_dir() {
@@ -953,10 +1059,13 @@ fn check_tree(root: &Path, token: &AtomicBool) -> Result<()> {
         } else {
             size = size
                 .checked_add(metadata.len())
-                .ok_or_else(|| fail("Tamaño inválido."))?;
+                .ok_or_else(|| fail("Tamaño inválido.", "Invalid size."))?;
         }
         if size > MAX_EXPANDED {
-            return Err(fail("La app descomprimida excede el límite permitido."));
+            return Err(fail(
+                "La app descomprimida excede el límite permitido.",
+                "The extracted app exceeds the permitted size limit.",
+            ));
         }
     }
     Ok(())
@@ -979,9 +1088,9 @@ fn hash_file(path: &Path, token: &AtomicBool) -> Result<String> {
 fn bytes_at(data: &[u8], start: usize, length: usize) -> Result<&[u8]> {
     let end = start
         .checked_add(length)
-        .ok_or_else(|| fail("Archivo binario mal formado."))?;
+        .ok_or_else(|| fail("Archivo binario mal formado.", "Malformed binary file."))?;
     data.get(start..end)
-        .ok_or_else(|| fail("Archivo binario truncado."))
+        .ok_or_else(|| fail("Archivo binario truncado.", "Truncated binary file."))
 }
 fn u16_at(data: &[u8], offset: usize) -> Result<u16> {
     Ok(u16::from_le_bytes(
@@ -1000,12 +1109,13 @@ fn validate_macho(data: &[u8]) -> Result<()> {
     if u32_at(data, 0)? != 0xfeedfacf || u32_at(data, 4)? != 0x01000007 || u32_at(data, 12)? != 2 {
         return Err(fail(
             "El paquete no contiene un ejecutable Mach-O Intel x86_64.",
+            "The package does not contain an Intel x86_64 Mach-O executable.",
         ));
     }
     let commands = u32_at(data, 16)? as usize;
     let command_bytes = u32_at(data, 20)? as usize;
     if commands == 0 || commands > 8192 || command_bytes > 16 * 1024 * 1024 {
-        return Err(fail("Cabecera Mach-O inválida."));
+        return Err(fail("Cabecera Mach-O inválida.", "Invalid Mach-O header."));
     }
     bytes_at(data, 32, command_bytes)?;
     let end = 32 + command_bytes;
@@ -1015,19 +1125,25 @@ fn validate_macho(data: &[u8]) -> Result<()> {
         let command = u32_at(data, offset)?;
         let length = u32_at(data, offset + 4)? as usize;
         if length < 8 || length % 4 != 0 || offset + length > end {
-            return Err(fail("Comando Mach-O inválido."));
+            return Err(fail("Comando Mach-O inválido.", "Invalid Mach-O command."));
         }
         match command {
             0x32 => {
                 if length < 24 || u32_at(data, offset + 8)? != 1 {
-                    return Err(fail("El ejecutable no declara la plataforma macOS."));
+                    return Err(fail(
+                        "El ejecutable no declara la plataforma macOS.",
+                        "The executable does not declare the macOS platform.",
+                    ));
                 }
                 let value = u32_at(data, offset + 12)?;
                 minimum = Some(minimum.unwrap_or(0).max(value));
             }
             0x24 => {
                 if length < 16 {
-                    return Err(fail("Versión mínima Mach-O inválida."));
+                    return Err(fail(
+                        "Versión mínima Mach-O inválida.",
+                        "Invalid Mach-O minimum version.",
+                    ));
                 }
                 let value = u32_at(data, offset + 8)?;
                 minimum = Some(minimum.unwrap_or(0).max(value));
@@ -1035,6 +1151,7 @@ fn validate_macho(data: &[u8]) -> Result<()> {
             0x25 | 0x2f | 0x30 => {
                 return Err(fail(
                     "El ejecutable declara una plataforma distinta de macOS.",
+                    "The executable declares a platform other than macOS.",
                 ))
             }
             _ => {}
@@ -1044,6 +1161,7 @@ fn validate_macho(data: &[u8]) -> Result<()> {
     if offset != end || minimum.is_none_or(|minimum| minimum == 0 || minimum > 0x000b0000) {
         return Err(fail(
             "El ejecutable no es compatible con macOS Big Sur 11.0.",
+            "The executable is not compatible with macOS Big Sur 11.0.",
         ));
     }
     Ok(())
@@ -1053,9 +1171,13 @@ fn safe_archive_name(name: &[u8]) -> Result<String> {
     // The shipped bundle uses ASCII names. Restricting them also prevents
     // Unicode normalization and case-fold aliases on typical macOS volumes.
     if !name.is_ascii() {
-        return Err(fail("El ZIP contiene nombres de archivo no admitidos."));
+        return Err(fail(
+            "El ZIP contiene nombres de archivo no admitidos.",
+            "The ZIP contains unsupported file names.",
+        ));
     }
-    let name = std::str::from_utf8(name).map_err(|_| fail("Nombre ZIP inválido."))?;
+    let name =
+        std::str::from_utf8(name).map_err(|_| fail("Nombre ZIP inválido.", "Invalid ZIP name."))?;
     let trimmed = name.strip_suffix('/').unwrap_or(name);
     if trimmed.is_empty()
         || trimmed.starts_with('/')
@@ -1065,11 +1187,17 @@ fn safe_archive_name(name: &[u8]) -> Result<String> {
             .split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(fail("El ZIP contiene una ruta insegura."));
+        return Err(fail(
+            "El ZIP contiene una ruta insegura.",
+            "The ZIP contains an unsafe path.",
+        ));
     }
     let top = trimmed.split('/').next().unwrap_or("");
     if top != APP_NAME && top != "__MACOSX" {
-        return Err(fail("El ZIP contiene archivos fuera de Turner.app."));
+        return Err(fail(
+            "El ZIP contiene archivos fuera de Turner.app.",
+            "The ZIP contains files outside Turner.app.",
+        ));
     }
     Ok(name.to_string())
 }
@@ -1089,7 +1217,10 @@ fn validate_zip_extra(extra: &[u8]) -> Result<()> {
             _ => false,
         };
         if !allowed {
-            return Err(fail("El ZIP contiene metadatos no admitidos."));
+            return Err(fail(
+                "El ZIP contiene metadatos no admitidos.",
+                "The ZIP contains unsupported metadata.",
+            ));
         }
         offset += 4 + length;
     }
@@ -1101,7 +1232,7 @@ fn validate_zip_extra(extra: &[u8]) -> Result<()> {
 /// ZIP64 and excessive expansion. The release builder emits ordinary ZIPs.
 fn validate_zip(data: &[u8]) -> Result<()> {
     if data.len() as u64 > MAX_ZIP || data.len() < 22 {
-        return Err(fail("Tamaño de ZIP inválido."));
+        return Err(fail("Tamaño de ZIP inválido.", "Invalid ZIP size."));
     }
     let search_start = data.len().saturating_sub(65_557);
     let end = (search_start..=data.len() - 22)
@@ -1111,7 +1242,12 @@ fn validate_zip(data: &[u8]) -> Result<()> {
                 && u16_at(data, offset + 20)
                     .is_ok_and(|comment| offset + 22 + comment as usize == data.len())
         })
-        .ok_or_else(|| fail("No se encontró el directorio del ZIP."))?;
+        .ok_or_else(|| {
+            fail(
+                "No se encontró el directorio del ZIP.",
+                "The ZIP directory was not found.",
+            )
+        })?;
     let count = u16_at(data, end + 10)? as usize;
     let directory_size = u32_at(data, end + 12)? as usize;
     let directory = u32_at(data, end + 16)? as usize;
@@ -1122,7 +1258,10 @@ fn validate_zip(data: &[u8]) -> Result<()> {
         || count > MAX_ENTRIES
         || directory.checked_add(directory_size) != Some(end)
     {
-        return Err(fail("El ZIP usa un formato dividido, ZIP64 o inválido."));
+        return Err(fail(
+            "El ZIP usa un formato dividido, ZIP64 o inválido.",
+            "The ZIP uses a split, ZIP64 or invalid format.",
+        ));
     }
     let mut offset = directory;
     let mut names = HashSet::new();
@@ -1131,7 +1270,7 @@ fn validate_zip(data: &[u8]) -> Result<()> {
     let mut expanded = 0u64;
     for _ in 0..count {
         if u32_at(data, offset)? != 0x02014b50 {
-            return Err(fail("Directorio ZIP inválido."));
+            return Err(fail("Directorio ZIP inválido.", "Invalid ZIP directory."));
         }
         let flags = u16_at(data, offset + 8)?;
         let method = u16_at(data, offset + 10)?;
@@ -1160,41 +1299,52 @@ fn validate_zip(data: &[u8]) -> Result<()> {
         {
             return Err(fail(
                 "El ZIP contiene enlaces, permisos o formatos no admitidos.",
+                "The ZIP contains unsupported links, permissions or formats.",
             ));
         }
         let canonical = name.trim_end_matches('/').to_ascii_lowercase();
         if !names.insert(canonical.clone()) {
-            return Err(fail("El ZIP contiene rutas duplicadas o ambiguas."));
+            return Err(fail(
+                "El ZIP contiene rutas duplicadas o ambiguas.",
+                "The ZIP contains duplicate or ambiguous paths.",
+            ));
         }
         if !name.ends_with('/') {
             file_names.insert(canonical);
         }
         expanded = expanded
             .checked_add(unpacked as u64)
-            .ok_or_else(|| fail("Tamaño ZIP fuera de rango."))?;
+            .ok_or_else(|| fail("Tamaño ZIP fuera de rango.", "ZIP size out of range."))?;
         if expanded > MAX_EXPANDED {
             return Err(fail(
                 "El ZIP se expandiría por encima del límite permitido.",
+                "The extracted ZIP would exceed the permitted size limit.",
             ));
         }
         if u32_at(data, local)? != 0x04034b50
             || u16_at(data, local + 6)? != flags
             || u16_at(data, local + 8)? != method
         {
-            return Err(fail("Las cabeceras del ZIP no coinciden."));
+            return Err(fail(
+                "Las cabeceras del ZIP no coinciden.",
+                "The ZIP headers do not match.",
+            ));
         }
         let local_name_length = u16_at(data, local + 26)? as usize;
         let local_extra = u16_at(data, local + 28)? as usize;
         validate_zip_extra(bytes_at(data, local + 30 + local_name_length, local_extra)?)?;
         if bytes_at(data, local + 30, local_name_length)? != name_bytes {
-            return Err(fail("El ZIP cambia una ruta entre sus cabeceras."));
+            return Err(fail(
+                "El ZIP cambia una ruta entre sus cabeceras.",
+                "The ZIP changes a path between its headers.",
+            ));
         }
         let content = local
             .checked_add(30 + local_name_length + local_extra)
-            .ok_or_else(|| fail("Offset ZIP inválido."))?;
+            .ok_or_else(|| fail("Offset ZIP inválido.", "Invalid ZIP offset."))?;
         let mut record_end = content
             .checked_add(compressed as usize)
-            .ok_or_else(|| fail("Tamaño ZIP inválido."))?;
+            .ok_or_else(|| fail("Tamaño ZIP inválido.", "Invalid ZIP size."))?;
         if flags & 8 != 0 {
             if u32_at(data, record_end)? == 0x08074b50 {
                 record_end += 4;
@@ -1203,47 +1353,63 @@ fn validate_zip(data: &[u8]) -> Result<()> {
                 || u32_at(data, record_end + 4)? != compressed
                 || u32_at(data, record_end + 8)? != unpacked
             {
-                return Err(fail("Descriptor ZIP inválido."));
+                return Err(fail("Descriptor ZIP inválido.", "Invalid ZIP descriptor."));
             }
             record_end += 12;
         } else if u32_at(data, local + 14)? != crc
             || u32_at(data, local + 18)? != compressed
             || u32_at(data, local + 22)? != unpacked
         {
-            return Err(fail("Tamaños ZIP inconsistentes."));
+            return Err(fail(
+                "Tamaños ZIP inconsistentes.",
+                "Inconsistent ZIP sizes.",
+            ));
         }
         if record_end > directory || local >= record_end {
             return Err(fail(
                 "Las entradas del ZIP se superponen con su directorio.",
+                "ZIP entries overlap the directory.",
             ));
         }
         records.push((local, record_end));
         offset = offset
             .checked_add(46 + name_length + extra + comment)
-            .ok_or_else(|| fail("Directorio ZIP inválido."))?;
+            .ok_or_else(|| fail("Directorio ZIP inválido.", "Invalid ZIP directory."))?;
         if offset > end {
-            return Err(fail("Directorio ZIP truncado."));
+            return Err(fail("Directorio ZIP truncado.", "Truncated ZIP directory."));
         }
     }
     if offset != end {
-        return Err(fail("El ZIP contiene registros no indexados."));
+        return Err(fail(
+            "El ZIP contiene registros no indexados.",
+            "The ZIP contains unindexed records.",
+        ));
     }
     records.sort_unstable();
     let mut previous = 0;
     for (start, end) in records {
         if start != previous {
-            return Err(fail("El ZIP contiene registros superpuestos o escondidos."));
+            return Err(fail(
+                "El ZIP contiene registros superpuestos o escondidos.",
+                "The ZIP contains overlapping or hidden records.",
+            ));
         }
         previous = end;
     }
     if previous != directory {
-        return Err(fail("El ZIP contiene datos sin indexar."));
+        return Err(fail(
+            "El ZIP contiene datos sin indexar.",
+            "The ZIP contains unindexed data.",
+        ));
     }
     for name in &names {
         let mut parent = name.as_str();
         while let Some((prefix, _)) = parent.rsplit_once('/') {
             if file_names.contains(prefix) {
-                return Err(fail("Una ruta ZIP usa un archivo como carpeta."));
+                return Err(fail(
+                    "Una ruta ZIP usa un archivo como carpeta.",
+                    "A ZIP path uses a file as a folder.",
+                ));
             }
             parent = prefix;
         }
@@ -1253,7 +1419,10 @@ fn validate_zip(data: &[u8]) -> Result<()> {
         format!("{APP_NAME}/Contents/MacOS/{EXECUTABLE}"),
     ] {
         if !file_names.contains(&required.to_ascii_lowercase()) {
-            return Err(fail("El ZIP no contiene una app completa."));
+            return Err(fail(
+                "El ZIP no contiene una app completa.",
+                "The ZIP does not contain a complete app.",
+            ));
         }
     }
     Ok(())
@@ -1285,6 +1454,7 @@ fn install_update(
     {
         return Err(fail(
             "La app instalada cambió desde la consulta. Volvé a buscar actualizaciones.",
+            "The installed app has changed since the check. Check for updates again.",
         ));
     }
     let archive = temporary.path.join(&candidate.asset);
@@ -1301,6 +1471,7 @@ fn install_update(
     {
         return Err(fail(
             "El ZIP no coincide con el tamaño y SHA256 publicados; no se modificó la app.",
+            "The ZIP does not match the published size and SHA256; the app was not modified.",
         ));
     }
     reporter.send(Event::Preparing);
@@ -1330,10 +1501,12 @@ fn install_update(
         token,
     )?;
     let source_hash = hash_file(&app.join("Contents/MacOS").join(EXECUTABLE), token)?;
-    let parent = installed
-        .bundle
-        .parent()
-        .ok_or_else(|| fail("No se encontró la carpeta de instalación."))?;
+    let parent = installed.bundle.parent().ok_or_else(|| {
+        fail(
+            "No se encontró la carpeta de instalación.",
+            "The installation folder was not found.",
+        )
+    })?;
     // Creating the stage beside the installed app verifies parent write access
     // and keeps both replacement renames on the same filesystem.
     let mut stage = PrivateDir::new(parent)?;
@@ -1355,6 +1528,7 @@ fn install_update(
     if hash_file(&staged_app.join("Contents/MacOS").join(EXECUTABLE), token)? != source_hash {
         return Err(fail(
             "La copia preparada no coincide con el ejecutable verificado.",
+            "The staged copy does not match the verified executable.",
         ));
     }
     cancelled(token)?;
@@ -1378,7 +1552,12 @@ fn install_update(
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .spawn()
-        .map_err(|error| fail(format!("No se pudo preparar el instalador: {error}")))?;
+        .map_err(|error| {
+            fail(
+                format!("No se pudo preparar el instalador: {error}"),
+                format!("Could not prepare the installer: {error}"),
+            )
+        })?;
     let mut helper = InstallerChild {
         child,
         handed_off: false,
@@ -1389,6 +1568,7 @@ fn install_update(
         if helper.child.try_wait()?.is_some() || Instant::now() >= ready_deadline {
             return Err(fail(
                 "El instalador no confirmó que esté preparado; la app sigue intacta.",
+                "The installer did not confirm it was ready; the app is unchanged.",
             ));
         }
         thread::sleep(Duration::from_millis(50));
@@ -1406,6 +1586,7 @@ fn install_update(
         if helper.child.try_wait()?.is_some() || Instant::now() >= commit_deadline {
             return Err(fail(
                 "No se confirmó el reinicio a tiempo; la app sigue intacta.",
+                "Restart was not confirmed in time; the app is unchanged.",
             ));
         }
     }
@@ -1422,6 +1603,7 @@ fn install_update(
         if helper.child.try_wait()?.is_some() {
             return Err(fail(
                 "El instalador terminó antes de confirmar el reinicio; la app sigue abierta.",
+                "The installer exited before confirming restart; the app remains open.",
             ));
         }
         if stage.path.join("committed").is_file() {
@@ -1430,6 +1612,7 @@ fn install_update(
         if Instant::now() >= acknowledgement_deadline {
             return Err(fail(
                 "El instalador no confirmó la actualización; la app sigue abierta.",
+                "The installer did not confirm the update; the app remains open.",
             ));
         }
         thread::sleep(Duration::from_millis(50));

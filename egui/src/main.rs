@@ -6,6 +6,7 @@
 mod app;
 mod audio;
 mod diagnostics;
+mod i18n;
 mod state;
 mod tuner_panel;
 mod updates;

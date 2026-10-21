@@ -1,6 +1,7 @@
 //! Vector instrument face. This module only presents a resolved reading; the
 //! audio engine remains the owner of pitch, target and in-tune state.
 
+use crate::i18n::Language;
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Rect, Response, Stroke};
 
 const WIDTH: f32 = 640.0;
@@ -11,6 +12,7 @@ const AMBER: Color32 = Color32::from_rgb(255, 192, 79);
 const OFF: Color32 = Color32::from_rgb(27, 38, 29);
 
 pub(crate) struct PanelReading<'a> {
+    pub(crate) language: Language,
     pub(crate) frequency: Option<f32>,
     pub(crate) cents: f32,
     pub(crate) note: Option<&'a str>,
@@ -121,7 +123,7 @@ pub(crate) fn render(ui: &mut egui::Ui, reading: PanelReading<'_>) -> Response {
         indicator,
     );
 
-    face.input_level(reading.level, reading.listening);
+    face.input_level(reading.level, reading.listening, reading.language);
     face.text(
         [534.0, 176.0],
         Align2::CENTER_CENTER,
@@ -152,9 +154,11 @@ pub(crate) fn render(ui: &mut egui::Ui, reading: PanelReading<'_>) -> Response {
         );
     }
     let hint = reading.target_hint.unwrap_or(if reading.listening {
-        "ESCUCHANDO"
+        reading.language.text("ESCUCHANDO", "LISTENING")
     } else {
-        "MICRÓFONO EN PAUSA"
+        reading
+            .language
+            .text("MICRÓFONO EN PAUSA", "MICROPHONE PAUSED")
     });
     let hint: String = hint.chars().take(34).collect();
     face.text(
@@ -482,7 +486,7 @@ impl Face<'_> {
         ));
     }
 
-    fn input_level(&self, level: f32, listening: bool) {
+    fn input_level(&self, level: f32, listening: bool, language: Language) {
         let active = if listening && level.is_finite() {
             (level.clamp(0.0, 1.0) * 28.0).round() as usize
         } else {
@@ -504,7 +508,11 @@ impl Face<'_> {
         self.text(
             [108.0, 187.0],
             Align2::CENTER_CENTER,
-            if listening { "MIC" } else { "PAUSA" },
+            if listening {
+                "MIC"
+            } else {
+                language.text("PAUSA", "PAUSED")
+            },
             11.0,
             if listening { CYAN } else { muted() },
             true,

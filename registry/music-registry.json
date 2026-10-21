@@ -15,7 +15,9 @@
     {"id":"viola","name":"Viola","defaultTuningId":"viola-standard"},
     {"id":"cello","name":"Cello","defaultTuningId":"cello-standard"},
     {"id":"vocal","name":"Vocal Pitch","defaultTuningId":"vocal-pitch"},
-    {"id":"chromatic","name":"Chromatic","defaultTuningId":"chromatic"}
+    {"id":"chromatic","name":"Chromatic","defaultTuningId":"chromatic"},
+    {"id":"charango","name":"Charango","defaultTuningId":"charango-standard"},
+    {"id":"ronroco","name":"Ronroco","defaultTuningId":"ronroco-argentine"}
   ],
   "tunings": [
     {
@@ -215,6 +217,18 @@
       "name": "Vocal Pitch (chromatic)",
       "instrument": "vocal",
       "strings": []
+    },
+    {
+      "id": "charango-standard",
+      "name": "Charango Standard (GCEAE)",
+      "instrument": "charango",
+      "strings": [["G",4],["G",4],["C",5],["C",5],["E",4],["E",5],["A",4],["A",4],["E",5],["E",5]]
+    },
+    {
+      "id": "ronroco-argentine",
+      "name": "Ronroco Argentine (DGBEB)",
+      "instrument": "ronroco",
+      "strings": [["D",4],["D",4],["G",4],["G",4],["B",3],["B",4],["E",4],["E",4],["B",4],["B",4]]
     }
   ]
 }

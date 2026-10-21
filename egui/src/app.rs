@@ -1,5 +1,6 @@
 use crate::audio::{AudioEvent, AudioManager, InputStatus};
 use crate::diagnostics::diagnostic_hint;
+use crate::i18n::{Language, LanguagePreference, Localization, LocalizedMessage};
 use crate::state::{SharedTunerState, TunerViewState};
 use crate::tuner_panel::{self, PanelReading};
 use crate::updates::{UpdateService, UpdateStatus};
@@ -19,6 +20,7 @@ pub(crate) struct App {
     audio: AudioManager,
     engine: Arc<Mutex<TunerEngine>>,
     listening: bool,
+    localization: Localization,
     show_spectrum: bool,
     settings_open: bool,
     analysis_open: bool,
@@ -46,6 +48,7 @@ impl Default for App {
                 ..EngineConfig::default()
             }))),
             listening: false,
+            localization: Localization::default(),
             show_spectrum: false,
             settings_open: false,
             analysis_open: false,
@@ -98,6 +101,8 @@ impl App {
         // the user's own window geometry through eframe's existing storage.
         self.compact_layout_pending =
             storage.get_string("compact_layout_version").as_deref() != Some("2");
+        self.localization.preference =
+            LanguagePreference::from_stored(storage.get_string("ui_language").as_deref());
         self.a4 = parse_or(storage, "a4", self.a4).clamp(420.0, 460.0);
         self.tuning_index = parse_or(storage, "tuning_index", parse_or(storage, "t_idx", 0_usize))
             .min(self.tunings.len().saturating_sub(1));
@@ -148,7 +153,7 @@ impl App {
             }
             Err(error) => {
                 if let Ok(mut state) = self.state.lock() {
-                    state.error = Some(error);
+                    state.error = Some(LocalizedMessage::audio(error));
                 }
             }
         }
@@ -183,12 +188,12 @@ impl App {
                 AudioEvent::InputFailed(error) => {
                     self.clear_input_display();
                     if let Ok(mut state) = self.state.lock() {
-                        state.error = Some(error);
+                        state.error = Some(LocalizedMessage::audio(error));
                     }
                 }
                 AudioEvent::ToneFailed(error) | AudioEvent::DeviceRefreshFailed(error) => {
                     if let Ok(mut state) = self.state.lock() {
-                        state.error = Some(error);
+                        state.error = Some(LocalizedMessage::audio(error));
                     }
                 }
             }
@@ -230,7 +235,7 @@ impl App {
     fn play_tone(&mut self, frequency: f32) {
         if let Err(error) = self.audio.play_tone(frequency) {
             if let Ok(mut state) = self.state.lock() {
-                state.error = Some(error);
+                state.error = Some(LocalizedMessage::audio(error));
             }
         }
     }
@@ -255,7 +260,10 @@ impl App {
 
     fn draw_errors(&self, ui: &mut egui::Ui, state: &TunerViewState) {
         if let Some(error) = &state.error {
-            ui.colored_label(egui::Color32::from_rgb(248, 113, 113), error);
+            ui.colored_label(
+                egui::Color32::from_rgb(248, 113, 113),
+                error.text(self.localization.language()),
+            );
         }
     }
 
@@ -264,15 +272,25 @@ impl App {
         for code in state.diagnostics.iter().chain(&state.backend_diagnostics) {
             ui.colored_label(
                 egui::Color32::from_rgb(234, 179, 8),
-                format!("⚠ {} — {}", code, diagnostic_hint(code)),
+                format!(
+                    "⚠ {} — {}",
+                    code,
+                    diagnostic_hint(code, self.localization.language())
+                ),
             );
         }
     }
 
     fn tuning_picker(&mut self, ui: &mut egui::Ui, id: &'static str, width: f32) {
         let previous_tuning = self.tuning_index;
-        self.preset_selector
-            .show(ui, id, &self.tunings, &mut self.tuning_index, width);
+        self.preset_selector.show(
+            ui,
+            id,
+            &self.tunings,
+            &mut self.tuning_index,
+            width,
+            self.localization.language(),
+        );
         if self.tuning_index != previous_tuning {
             if let (Some(tuning), Ok(mut engine)) = (
                 self.tunings.get(self.tuning_index).cloned(),
@@ -284,12 +302,13 @@ impl App {
     }
 
     fn draw_microphone_button(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let language = self.localization.language();
         let device = self
             .audio
             .selected_input_device
             .as_deref()
-            .unwrap_or("Entrada del sistema");
-        if controls::microphone_button(ui, self.audio.input_status(), device).clicked() {
+            .unwrap_or(language.text("Entrada del sistema", "System input"));
+        if controls::microphone_button(ui, self.audio.input_status(), device, language).clicked() {
             self.toggle_mic(context);
         }
     }
@@ -299,6 +318,7 @@ impl App {
             ui,
             &crate::version::display_version(),
             self.updates.status(),
+            self.localization.language(),
         );
         match action {
             Some(UpdateAction::Check) => self.updates.check(context),
@@ -309,16 +329,27 @@ impl App {
     }
 
     fn draw_compact(&mut self, ui: &mut egui::Ui, state: &TunerViewState, context: &egui::Context) {
+        let language = self.localization.language();
         let display_note = state.display_note();
         let target_hint = if self.audio.input_status() == InputStatus::Starting {
-            Some("INICIANDO MICRÓFONO…".to_owned())
+            Some(
+                language
+                    .text("INICIANDO MICRÓFONO…", "STARTING MICROPHONE…")
+                    .to_owned(),
+            )
         } else if self.audio.input_status() == InputStatus::Stopping {
-            Some("SILENCIANDO MICRÓFONO…".to_owned())
+            Some(
+                language
+                    .text("SILENCIANDO MICRÓFONO…", "MUTING MICROPHONE…")
+                    .to_owned(),
+            )
         } else if self.listening && state.frequency.is_some() {
             state.target.as_ref().map(|target| {
                 format!(
-                    "OBJETIVO {} · DETECTADA {}",
+                    "{} {} · {} {}",
+                    language.text("OBJETIVO", "TARGET"),
                     get_note_display(target),
+                    language.text("DETECTADA", "DETECTED"),
                     state.note.as_deref().unwrap_or("—")
                 )
             })
@@ -326,6 +357,7 @@ impl App {
             None
         };
         tuner_panel::render(ui, PanelReading {
+            language,
             frequency: state.frequency,
             cents: state.cents,
             note: display_note.as_deref(),
@@ -334,13 +366,13 @@ impl App {
             listening: self.listening,
             a4: self.a4,
             target_hint: target_hint.as_deref(),
-        }).on_hover_text("La nota central es la referencia del arco. Flecha izquierda: subir el tono; derecha: bajarlo. Verde: afinado. En Análisis podés ver también la nota detectada.");
+        }).on_hover_text(language.text("La nota central es la referencia del arco. Flecha izquierda: subir el tono; derecha: bajarlo. Verde: afinado. En Análisis podés ver también la nota detectada.", "The center note is the reference for the arc. Left arrow: raise the pitch; right arrow: lower it. Green: in tune. Analysis also shows the detected note."));
 
         ui.add_space(1.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 7.0;
             self.draw_microphone_button(ui, context);
-            if self.audio_is_playing_tone() && controls::stop_tone_button(ui).clicked() {
+            if self.audio_is_playing_tone() && controls::stop_tone_button(ui, language).clicked() {
                 self.audio.stop_tone();
             }
             let diagnostics_count = state.diagnostics.len() + state.backend_diagnostics.len();
@@ -348,35 +380,93 @@ impl App {
             self.tuning_picker(ui, "compact_tuning", picker_width);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let analysis_label = if diagnostics_count > 0 {
-                    egui::RichText::new(format!("Análisis · {diagnostics_count}"))
-                        .color(egui::Color32::from_rgb(224, 183, 107))
+                    egui::RichText::new(format!(
+                        "{} · {diagnostics_count}",
+                        language.text("Análisis", "Analysis")
+                    ))
+                    .color(egui::Color32::from_rgb(224, 183, 107))
                 } else {
-                    egui::RichText::new("Análisis")
+                    egui::RichText::new(language.text("Análisis", "Analysis"))
                 };
                 if ui
                     .selectable_label(self.analysis_open, analysis_label)
-                    .on_hover_text("Señal, espectro, acordes y avisos del micrófono")
+                    .on_hover_text(language.text(
+                        "Señal, espectro, acordes y avisos del micrófono",
+                        "Signal, spectrum, chords and microphone diagnostics",
+                    ))
                     .clicked()
                 {
                     self.analysis_open = !self.analysis_open;
                 }
-                if ui.selectable_label(self.settings_open, "Ajustes").clicked() {
+                if ui
+                    .selectable_label(self.settings_open, language.text("Ajustes", "Settings"))
+                    .clicked()
+                {
                     self.settings_open = !self.settings_open;
                 }
             });
         });
     }
 
+    fn draw_language_settings(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let language = self.localization.language();
+        let automatic = format!(
+            "{} — {}",
+            language.text("Automático", "Automatic"),
+            self.localization.system_language().name(),
+        );
+        let mut preference = self.localization.preference;
+        ui.horizontal(|ui| {
+            ui.label(language.text("Idioma", "Language"));
+            egui::ComboBox::from_id_source("ui_language")
+                .selected_text(match preference {
+                    LanguagePreference::System => automatic.as_str(),
+                    LanguagePreference::Spanish => "Español",
+                    LanguagePreference::English => "English",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut preference, LanguagePreference::System, &automatic);
+                    ui.selectable_value(&mut preference, LanguagePreference::Spanish, "Español");
+                    ui.selectable_value(&mut preference, LanguagePreference::English, "English");
+                });
+        });
+        if preference != self.localization.preference {
+            self.set_language_preference(preference, context);
+        }
+    }
+
+    fn set_language_preference(&mut self, preference: LanguagePreference, context: &egui::Context) {
+        // Presentation-only: no audio commands, engine reset or device refresh.
+        self.localization.set_preference(preference);
+        for viewport in [
+            egui::ViewportId::ROOT,
+            egui::ViewportId::from_hash_of("tuner_settings"),
+            egui::ViewportId::from_hash_of("tuner_analysis"),
+        ] {
+            context.request_repaint_of(viewport);
+        }
+    }
+
     fn draw_controls(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        ui.heading("Afinación");
+        self.draw_language_settings(ui, context);
+        let language = self.localization.language();
+        ui.add_space(8.0);
+        ui.heading(language.text("Afinación", "Tuning"));
         self.tuning_picker(ui, "settings_tuning", ui.available_width().min(360.0));
 
-        ui.collapsing("Editar afinación actual", |ui| {
+        egui::CollapsingHeader::new(
+            language.text("Editar afinación actual", "Edit current tuning"),
+        )
+        .id_source("edit_current_tuning")
+        .show(ui, |ui| {
             let Some(tuning) = self.tunings.get_mut(self.tuning_index) else {
                 return;
             };
             if tuning.strings.is_empty() {
-                ui.small("El modo cromático sigue todas las notas; no tiene cuerdas fijas.");
+                ui.small(language.text(
+                    "El modo cromático sigue todas las notas; no tiene cuerdas fijas.",
+                    "Chromatic mode follows every note; it has no fixed strings.",
+                ));
             }
             let mut changed = false;
             for string in &mut tuning.strings {
@@ -395,7 +485,7 @@ impl App {
         });
 
         ui.horizontal(|ui| {
-            ui.label("Referencia A4");
+            ui.label(language.text("Referencia A4", "A4 reference"));
             if ui
                 .add(egui::Slider::new(&mut self.a4, 420.0..=460.0).text("Hz"))
                 .changed()
@@ -406,14 +496,14 @@ impl App {
             }
         });
         ui.add_space(8.0);
-        ui.heading("Entrada de audio");
+        ui.heading(language.text("Entrada de audio", "Audio input"));
         ui.horizontal(|ui| {
             let previous = self.audio.selected_input_device.clone();
             let device = self
                 .audio
                 .selected_input_device
                 .as_deref()
-                .unwrap_or("Predeterminada del sistema");
+                .unwrap_or(language.text("Predeterminada del sistema", "System default"));
             let width = (ui.available_width() - 100.0).max(160.0);
             egui::ComboBox::from_id_source("input_device")
                 .width(width)
@@ -422,7 +512,7 @@ impl App {
                     ui.selectable_value(
                         &mut self.audio.selected_input_device,
                         None,
-                        "Predeterminada del sistema",
+                        language.text("Predeterminada del sistema", "System default"),
                     );
                     for name in &self.audio.input_devices {
                         ui.selectable_value(
@@ -432,7 +522,7 @@ impl App {
                         );
                     }
                 });
-            if ui.button("Actualizar").clicked() {
+            if ui.button(language.text("Actualizar", "Refresh")).clicked() {
                 self.audio.refresh();
             }
             if self.audio.selected_input_device != previous {
@@ -442,15 +532,23 @@ impl App {
         ui.horizontal(|ui| {
             self.draw_microphone_button(ui, context);
             ui.label(match self.audio.input_status() {
-                InputStatus::Starting => "Iniciando micrófono… Podés cancelar con el jack.",
-                InputStatus::Running => "Escuchando",
-                InputStatus::Stopping => "Cerrando la entrada de audio…",
-                InputStatus::Stopped => "Micrófono en pausa",
+                InputStatus::Starting => language.text(
+                    "Iniciando micrófono… Podés cancelar con el jack.",
+                    "Starting microphone… Click the jack to cancel.",
+                ),
+                InputStatus::Running => language.text("Escuchando", "Listening"),
+                InputStatus::Stopping => {
+                    language.text("Cerrando la entrada de audio…", "Closing the audio input…")
+                }
+                InputStatus::Stopped => language.text("Micrófono en pausa", "Microphone paused"),
             });
         });
 
         ui.add_space(8.0);
-        ui.heading("Tonos y entrenamiento auditivo");
+        ui.heading(language.text(
+            "Tonos y entrenamiento auditivo",
+            "Reference tones and ear training",
+        ));
         let has_strings = self
             .tunings
             .get(self.tuning_index)
@@ -461,54 +559,68 @@ impl App {
                 .add_enabled(
                     has_strings || playing,
                     egui::Button::new(if playing {
-                        "Detener tono"
+                        language.text("Detener tono", "Stop tone")
                     } else {
-                        "Tono de referencia"
+                        language.text("Tono de referencia", "Reference tone")
                     }),
                 )
-                .on_hover_text("Reproduce la primera cuerda de la afinación. Atajo: R.")
+                .on_hover_text(language.text(
+                    "Reproduce la primera cuerda de la afinación. Atajo: R.",
+                    "Plays the first string of the tuning. Shortcut: R.",
+                ))
                 .clicked()
             {
                 self.toggle_reference_tone();
             }
             if ui
-                .add_enabled(has_strings, egui::Button::new("Nota aleatoria"))
-                .on_hover_text(
-                    "Entrenamiento auditivo: reproduce una cuerda al azar de la afinación actual.",
+                .add_enabled(
+                    has_strings,
+                    egui::Button::new(language.text("Nota aleatoria", "Random note")),
                 )
+                .on_hover_text(language.text(
+                    "Entrenamiento auditivo: reproduce una cuerda al azar de la afinación actual.",
+                    "Ear training: plays a random string from the current tuning.",
+                ))
                 .clicked()
             {
                 self.play_random_string();
             }
         });
         if !has_strings {
-            ui.small("Elegí una afinación con cuerdas para usar los tonos de referencia y el entrenamiento.");
+            ui.small(language.text("Elegí una afinación con cuerdas para usar los tonos de referencia y el entrenamiento.", "Choose a tuning with strings to use reference tones and ear training."));
         }
         ui.add_space(8.0);
         ui.separator();
-        ui.small("Espacio / M: micrófono     ·     R: tono de referencia");
-        ui.small("Los gráficos, el espectro y los diagnósticos están en Análisis.");
+        ui.small(language.text(
+            "Espacio / M: micrófono     ·     R: tono de referencia",
+            "Space / M: microphone     ·     R: reference tone",
+        ));
+        ui.small(language.text(
+            "Los gráficos, el espectro y los diagnósticos están en Análisis.",
+            "Graphs, spectrum and diagnostics are in Analysis.",
+        ));
         ui.add_space(6.0);
         self.draw_updates(ui, context);
     }
 
     fn draw_analysis(&mut self, ui: &mut egui::Ui, state: &TunerViewState) {
-        ui.heading("Lectura de afinación");
+        let language = self.localization.language();
+        ui.heading(language.text("Lectura de afinación", "Tuning reading"));
         egui::Grid::new("reading_details")
             .num_columns(2)
             .spacing([24.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Nota detectada");
+                ui.label(language.text("Nota detectada", "Detected note"));
                 ui.monospace(if state.frequency.is_some() {
                     state.note.as_deref().unwrap_or("—")
                 } else {
                     "—"
                 });
                 ui.end_row();
-                ui.label("Referencia del indicador");
+                ui.label(language.text("Referencia del indicador", "Meter reference"));
                 ui.monospace(state.display_note().unwrap_or_else(|| "—".to_string()));
                 ui.end_row();
-                ui.label("Frecuencia");
+                ui.label(language.text("Frecuencia", "Frequency"));
                 ui.monospace(
                     state
                         .frequency
@@ -516,37 +628,46 @@ impl App {
                         .unwrap_or_else(|| "—".to_string()),
                 );
                 ui.end_row();
-                ui.label("Desviación");
+                ui.label(language.text("Desviación", "Deviation"));
                 ui.monospace(if state.frequency.is_some() {
                     format!("{:+.1} cents", state.cents)
                 } else {
                     "—".to_string()
                 });
                 ui.end_row();
-                ui.label("Confianza");
+                ui.label(language.text("Confianza", "Confidence"));
                 ui.monospace(format!("{:.0}%", state.confidence * 100.0));
                 ui.end_row();
                 if state.is_power {
-                    ui.label("Acorde");
-                    ui.label("Power chord detectado");
+                    ui.label(language.text("Acorde", "Chord"));
+                    ui.label(language.text("Power chord detectado", "Power chord detected"));
                     ui.end_row();
                 }
             });
         ui.add(
             egui::ProgressBar::new(state.level)
-                .text("Nivel de entrada")
+                .text(language.text("Nivel de entrada", "Input level"))
                 .desired_width(ui.available_width().min(520.0)),
         );
         ui.add_space(5.0);
-        ui.heading("Señal e historial");
-        ui.small("Forma de onda · indicador lineal · historial de cents");
+        ui.heading(language.text("Señal e historial", "Signal and history"));
+        ui.small(language.text(
+            "Forma de onda · indicador lineal · historial de cents",
+            "Waveform · linear meter · cents history",
+        ));
         self.visualization.draw_primary(ui, state);
         ui.add_space(8.0);
 
         let spectrum_was_enabled = self.show_spectrum || self.visualization.show_spectrogram;
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.show_spectrum, "Espectro");
-            ui.checkbox(&mut self.visualization.show_spectrogram, "Espectrograma");
+            ui.checkbox(
+                &mut self.show_spectrum,
+                language.text("Espectro", "Spectrum"),
+            );
+            ui.checkbox(
+                &mut self.visualization.show_spectrogram,
+                language.text("Espectrograma", "Spectrogram"),
+            );
         });
         let spectrum_is_enabled = self.show_spectrum || self.visualization.show_spectrogram;
         if spectrum_is_enabled != spectrum_was_enabled {
@@ -559,27 +680,31 @@ impl App {
         }
         if self.show_spectrum {
             self.visualization
-                .draw_spectrum(ui, state, state.sample_rate.max(1.0));
+                .draw_spectrum(ui, state, state.sample_rate.max(1.0), language);
         }
         if self.visualization.show_spectrogram {
-            self.visualization.draw_spectrogram(ui);
+            self.visualization.draw_spectrogram(ui, language);
         }
         if !self.listening {
-            ui.small("Iniciá el micrófono para ver la señal y los gráficos en vivo.");
+            ui.small(language.text(
+                "Iniciá el micrófono para ver la señal y los gráficos en vivo.",
+                "Start the microphone to see the live signal and graphs.",
+            ));
         }
         ui.add_space(8.0);
         ui.separator();
-        ui.heading("Diagnósticos");
+        ui.heading(language.text("Diagnósticos", "Diagnostics"));
         self.draw_diagnostics(ui, state);
         if state.error.is_none()
             && state.diagnostics.is_empty()
             && state.backend_diagnostics.is_empty()
         {
-            ui.small("Sin avisos.");
+            ui.small(language.text("Sin avisos.", "No warnings."));
         }
     }
 
     fn show_settings(&mut self, context: &egui::Context) {
+        let language = self.localization.language();
         if !self.settings_open {
             return;
         }
@@ -587,12 +712,13 @@ impl App {
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("tuner_settings"),
             egui::ViewportBuilder::default()
-                .with_title("Turner · Ajustes")
+                .with_title(language.text("Turner · Ajustes", "Turner · Settings"))
                 .with_inner_size([480.0, 560.0])
                 .with_min_inner_size([380.0, 300.0]),
             |context, class| {
                 if class == egui::ViewportClass::Embedded {
-                    egui::Window::new("Ajustes")
+                    egui::Window::new(language.text("Ajustes", "Settings"))
+                        .id(egui::Id::new("tuner_settings_embedded"))
                         .open(&mut open)
                         .default_width(440.0)
                         .vscroll(true)
@@ -616,6 +742,7 @@ impl App {
     }
 
     fn show_analysis(&mut self, context: &egui::Context, state: &TunerViewState) {
+        let language = self.localization.language();
         if !self.analysis_open {
             return;
         }
@@ -623,12 +750,13 @@ impl App {
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("tuner_analysis"),
             egui::ViewportBuilder::default()
-                .with_title("Turner · Análisis")
+                .with_title(language.text("Turner · Análisis", "Turner · Analysis"))
                 .with_inner_size([620.0, 620.0])
                 .with_min_inner_size([420.0, 320.0]),
             |context, class| {
                 if class == egui::ViewportClass::Embedded {
-                    egui::Window::new("Análisis")
+                    egui::Window::new(language.text("Análisis", "Analysis"))
+                        .id(egui::Id::new("tuner_analysis_embedded"))
                         .open(&mut open)
                         .default_width(560.0)
                         .vscroll(true)
@@ -700,6 +828,10 @@ impl eframe::App for App {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("compact_layout_version", "2".to_owned());
+        storage.set_string(
+            "ui_language",
+            self.localization.preference.stored().to_owned(),
+        );
         storage.set_string("a4", self.a4.to_string());
         storage.set_string("tuning_index", self.tuning_index.to_string());
         storage.set_string("show_spectrum", self.show_spectrum.to_string());
@@ -725,6 +857,7 @@ fn update_settings(
     ui: &mut egui::Ui,
     current_version: &str,
     status: &UpdateStatus,
+    language: Language,
 ) -> Option<UpdateAction> {
     let mut action = None;
     let busy = matches!(
@@ -737,8 +870,15 @@ fn update_settings(
     ui.horizontal_wrapped(|ui| {
         ui.small(format!("Turner · {current_version}"));
         if ui
-            .add_enabled(!busy, egui::Button::new("Buscar actualizaciones").small())
-            .on_hover_text("Consulta las versiones de Turner en GitHub")
+            .add_enabled(
+                !busy,
+                egui::Button::new(language.text("Buscar actualizaciones", "Check for updates"))
+                    .small(),
+            )
+            .on_hover_text(language.text(
+                "Consulta las versiones de Turner en GitHub",
+                "Checks Turner releases on GitHub",
+            ))
             .clicked()
         {
             action = Some(UpdateAction::Check);
@@ -749,34 +889,48 @@ fn update_settings(
         UpdateStatus::Checking => {
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
-                ui.small("Consultando GitHub…");
-                if ui.small_button("Cancelar").clicked() {
+                ui.small(language.text("Consultando GitHub…", "Checking GitHub…"));
+                if ui
+                    .small_button(language.text("Cancelar", "Cancel"))
+                    .clicked()
+                {
                     action = Some(UpdateAction::Cancel);
                 }
             });
         }
         UpdateStatus::UpToDate => {
             ui.label(
-                egui::RichText::new("Ya tenés la última versión.")
-                    .small()
-                    .color(egui::Color32::from_rgb(146, 232, 141)),
+                egui::RichText::new(language.text(
+                    "Ya tenés la última versión.",
+                    "You have the latest version.",
+                ))
+                .small()
+                .color(egui::Color32::from_rgb(146, 232, 141)),
             );
         }
         UpdateStatus::NoRelease => {
-            ui.small("Todavía no hay una versión publicada.");
+            ui.small(language.text(
+                "Todavía no hay una versión publicada.",
+                "No release has been published yet.",
+            ));
         }
         UpdateStatus::Available(release) => {
             ui.label(
                 egui::RichText::new(format!(
-                    "Nueva versión disponible: {} · r{}",
-                    release.version, release.revision
+                    "{}: {} · r{}",
+                    language.text("Nueva versión disponible", "New version available"),
+                    release.version,
+                    release.revision
                 ))
                 .small()
                 .color(egui::Color32::from_rgb(146, 232, 141)),
             );
             if ui
-                .button("Actualizar y reiniciar")
-                .on_hover_text("Descarga esta versión y reinicia Turner al terminar")
+                .button(language.text("Actualizar y reiniciar", "Update and restart"))
+                .on_hover_text(language.text(
+                    "Descarga esta versión y reinicia Turner al terminar",
+                    "Downloads this version and restarts Turner when ready",
+                ))
                 .clicked()
             {
                 action = Some(UpdateAction::Install);
@@ -786,10 +940,14 @@ fn update_settings(
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.small(format!(
-                    "Descargando… {:.1} MB",
+                    "{} {:.1} MB",
+                    language.text("Descargando…", "Downloading…"),
                     *received as f64 / 1_000_000.0
                 ));
-                if ui.small_button("Cancelar").clicked() {
+                if ui
+                    .small_button(language.text("Cancelar", "Cancel"))
+                    .clicked()
+                {
                     action = Some(UpdateAction::Cancel);
                 }
             });
@@ -806,24 +964,29 @@ fn update_settings(
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.small(if matches!(status, UpdateStatus::ReadyToRestart) {
-                    "Reiniciando Turner…"
+                    language.text("Reiniciando Turner…", "Restarting Turner…")
                 } else {
-                    "Verificando y preparando la actualización…"
+                    language.text(
+                        "Verificando y preparando la actualización…",
+                        "Verifying and preparing the update…",
+                    )
                 });
                 if matches!(status, UpdateStatus::Preparing)
-                    && ui.small_button("Cancelar").clicked()
+                    && ui
+                        .small_button(language.text("Cancelar", "Cancel"))
+                        .clicked()
                 {
                     action = Some(UpdateAction::Cancel);
                 }
             });
         }
         UpdateStatus::Cancelled => {
-            ui.small("Actualización cancelada.");
+            ui.small(language.text("Actualización cancelada.", "Update cancelled."));
         }
         UpdateStatus::Error(error) => {
             ui.add(
                 egui::Label::new(
-                    egui::RichText::new(error)
+                    egui::RichText::new(error.text(language))
                         .small()
                         .color(egui::Color32::from_rgb(248, 113, 113)),
                 )
@@ -878,6 +1041,98 @@ fn parse_bool(storage: &dyn eframe::Storage, key: &str) -> bool {
 }
 
 #[cfg(test)]
+mod language_tests {
+    use super::*;
+    use eframe::App as _;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct MemoryStorage(HashMap<String, String>);
+
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn switching_language_keeps_active_audio_and_existing_settings() {
+        let context = egui::Context::default();
+        let (audio, received_audio_command) = AudioManager::active_input_probe();
+        let mut app = App {
+            audio,
+            listening: true,
+            a4: 442.0,
+            tuning_index: 17,
+            ..App::default()
+        };
+        app.audio.selected_input_device = Some("USB Guitar Input".to_owned());
+        {
+            let mut state = app.state.lock().unwrap();
+            state.frequency = Some(440.0);
+            state.note = Some("A4".to_owned());
+            state.frame_id = 42;
+        }
+        let engine = app.engine.clone();
+        let canonical_names: Vec<_> = app.tunings.iter().map(|tuning| tuning.name).collect();
+        for preference in [
+            LanguagePreference::Spanish,
+            LanguagePreference::English,
+            LanguagePreference::System,
+        ] {
+            app.set_language_preference(preference, &context);
+            assert!(
+                !received_audio_command(),
+                "language selection must not send audio commands"
+            );
+            assert_eq!(app.audio.input_status(), InputStatus::Running);
+            assert!(app.listening);
+            assert!(Arc::ptr_eq(&engine, &app.engine));
+            assert_eq!(app.state.lock().unwrap().frame_id, 42);
+            assert_eq!(app.state.lock().unwrap().frequency, Some(440.0));
+            assert_eq!(app.a4, 442.0);
+            assert_eq!(app.tuning_index, 17);
+            assert_eq!(
+                app.audio.selected_input_device.as_deref(),
+                Some("USB Guitar Input")
+            );
+            assert_eq!(
+                app.tunings
+                    .iter()
+                    .map(|tuning| tuning.name)
+                    .collect::<Vec<_>>(),
+                canonical_names
+            );
+            let mut storage = MemoryStorage::default();
+            app.save(&mut storage);
+            let mut restored = App::default();
+            restored.restore(Some(&storage));
+            assert_eq!(restored.localization.preference, preference);
+            assert_eq!(restored.a4, 442.0);
+            assert_eq!(restored.tuning_index, 17);
+            assert_eq!(
+                restored.audio.selected_input_device.as_deref(),
+                Some("USB Guitar Input")
+            );
+        }
+    }
+
+    #[test]
+    fn old_preferences_use_automatic_and_keep_legacy_tuning_index() {
+        let mut storage = MemoryStorage::default();
+        storage.0.insert("t_idx".to_owned(), "12".to_owned());
+        let mut app = App::default();
+        app.restore(Some(&storage));
+        assert_eq!(app.localization.preference, LanguagePreference::System);
+        assert_eq!(app.tuning_index, 12);
+    }
+}
+
+#[cfg(test)]
 mod update_ui_tests {
     use super::*;
     use crate::updates::ReleaseInfo;
@@ -885,6 +1140,7 @@ mod update_ui_tests {
     struct Harness {
         context: egui::Context,
         time: f64,
+        language: Language,
     }
 
     impl Harness {
@@ -892,7 +1148,11 @@ mod update_ui_tests {
             let context = egui::Context::default();
             context.enable_accesskit();
             App::configure_style(&context);
-            Self { context, time: 0.0 }
+            Self {
+                context,
+                time: 0.0,
+                language: Language::Spanish,
+            }
         }
 
         fn frame(
@@ -914,7 +1174,7 @@ mod update_ui_tests {
                 },
                 |context| {
                     egui::CentralPanel::default().show(context, |ui| {
-                        action = update_settings(ui, "0.1.13 · r3", status);
+                        action = update_settings(ui, "0.1.13 · r3", status, self.language);
                     });
                 },
             );
@@ -967,6 +1227,41 @@ mod update_ui_tests {
             ((bounds.x0 + bounds.x1) / 2.0) as f32,
             ((bounds.y0 + bounds.y1) / 2.0) as f32,
         )
+    }
+
+    #[test]
+    fn update_controls_switch_language_with_the_same_actions() {
+        let mut harness = Harness::new();
+        let available = UpdateStatus::Available(ReleaseInfo {
+            version: "0.1.14".to_owned(),
+            revision: 4,
+        });
+        harness.settle(&available);
+        harness.language = Language::English;
+        let output = harness.settle(&available);
+        assert_eq!(
+            harness.click(&available, button_center(&output, "Update and restart")),
+            Some(UpdateAction::Install)
+        );
+        let error = UpdateStatus::Error(LocalizedMessage::new(
+            "No se pudo descargar la actualización: HTTP 503",
+            "Could not download the update: HTTP 503",
+        ));
+        for (language, expected) in [
+            (Language::English, "Could not download"),
+            (Language::Spanish, "No se pudo descargar"),
+        ] {
+            harness.language = language;
+            let output = harness.settle(&error);
+            assert!(output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.name().is_some_and(|name| name.starts_with(expected))));
+        }
     }
 
     #[test]
