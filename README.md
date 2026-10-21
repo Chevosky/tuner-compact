@@ -1,3 +1,17 @@
+# Tuner Compact para Mac Intel
+
+Adaptación del afinador nativo de Tuner con un panel compacto: arco graduado,
+nota digital y flechas para ajustar la afinación. Conserva la entrada de
+micrófono, los presets y las ventanas de Ajustes y Análisis.
+
+La compilación para Intel y macOS 11 está preparada en un workflow manual;
+su ejecución y el artefacto macOS están pendientes de verificación.
+
+- [Instrucciones y detalles de Tuner Compact](COMPACT-README.txt)
+- [Workflow manual: Build Tuner Compact for Intel](.github/workflows/build-compact-macos.yml)
+
+---
+
 # Guitar Tuner
 
 **Кросс-платформенный гитарный тюнер с двумя независимыми клиентами**
