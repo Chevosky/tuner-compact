@@ -442,7 +442,7 @@ impl App {
         ui.horizontal(|ui| {
             self.draw_microphone_button(ui, context);
             ui.label(match self.audio.input_status() {
-                InputStatus::Starting => "Iniciando micrófono… Podés cancelar con el plug.",
+                InputStatus::Starting => "Iniciando micrófono… Podés cancelar con el jack.",
                 InputStatus::Running => "Escuchando",
                 InputStatus::Stopping => "Cerrando la entrada de audio…",
                 InputStatus::Stopped => "Micrófono en pausa",
@@ -587,7 +587,7 @@ impl App {
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("tuner_settings"),
             egui::ViewportBuilder::default()
-                .with_title("Tuner · Ajustes")
+                .with_title("Turner · Ajustes")
                 .with_inner_size([480.0, 560.0])
                 .with_min_inner_size([380.0, 300.0]),
             |context, class| {
@@ -623,7 +623,7 @@ impl App {
         context.show_viewport_immediate(
             egui::ViewportId::from_hash_of("tuner_analysis"),
             egui::ViewportBuilder::default()
-                .with_title("Tuner · Análisis")
+                .with_title("Turner · Análisis")
                 .with_inner_size([620.0, 620.0])
                 .with_min_inner_size([420.0, 320.0]),
             |context, class| {
@@ -735,10 +735,10 @@ fn update_settings(
             | UpdateStatus::ReadyToRestart
     );
     ui.horizontal_wrapped(|ui| {
-        ui.small(format!("Tuner Compact · {current_version}"));
+        ui.small(format!("Turner · {current_version}"));
         if ui
             .add_enabled(!busy, egui::Button::new("Buscar actualizaciones").small())
-            .on_hover_text("Consulta las versiones de Tuner Compact en GitHub")
+            .on_hover_text("Consulta las versiones de Turner en GitHub")
             .clicked()
         {
             action = Some(UpdateAction::Check);
@@ -776,7 +776,7 @@ fn update_settings(
             );
             if ui
                 .button("Actualizar y reiniciar")
-                .on_hover_text("Descarga esta versión y reinicia Tuner al terminar")
+                .on_hover_text("Descarga esta versión y reinicia Turner al terminar")
                 .clicked()
             {
                 action = Some(UpdateAction::Install);
@@ -806,7 +806,7 @@ fn update_settings(
             ui.horizontal_wrapped(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.small(if matches!(status, UpdateStatus::ReadyToRestart) {
-                    "Reiniciando Tuner…"
+                    "Reiniciando Turner…"
                 } else {
                     "Verificando y preparando la actualización…"
                 });

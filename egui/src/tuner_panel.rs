@@ -138,10 +138,12 @@ pub(crate) fn render(ui: &mut egui::Ui, reading: PanelReading<'_>) -> Response {
         CYAN,
         true,
     );
-    // A quiet wordmark rather than the third-party logo in the reference.
-    for (index, character) in "TUNER".chars().enumerate() {
+    // Keep the wordmark centered independently of its character count.
+    let wordmark = "TURNER";
+    let wordmark_start = 320.0 - (wordmark.len() - 1) as f32 * 15.5 / 2.0;
+    for (index, character) in wordmark.chars().enumerate() {
         face.text(
-            [289.0 + index as f32 * 15.5, 190.0],
+            [wordmark_start + index as f32 * 15.5, 190.0],
             Align2::CENTER_CENTER,
             &character.to_string(),
             16.0,

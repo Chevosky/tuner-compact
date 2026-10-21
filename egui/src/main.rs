@@ -20,6 +20,10 @@ fn main() -> eframe::Result<()> {
         // Keep the instrument's dark palette, including on macOS theme changes.
         follow_system_theme: false,
         viewport: egui::ViewportBuilder::default()
+            // eframe uses app_id for its storage directory. Keep the original
+            // ID so the Turner name retains existing preferences and geometry.
+            .with_app_id("Guitar Tuner")
+            .with_title("Turner")
             .with_inner_size([680.0, 294.0])
             .with_min_inner_size([520.0, 290.0])
             .with_icon(
@@ -29,7 +33,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Guitar Tuner",
+        "Turner",
         options,
         Box::new(|creation_context| {
             App::configure_style(&creation_context.egui_ctx);

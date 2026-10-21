@@ -14,26 +14,60 @@ pub(super) fn microphone_button(ui: &mut egui::Ui, status: InputStatus, device: 
     paint_icon_background(ui, rect, &response, color);
     let center = rect.center();
     let painter = ui.painter();
-    let stroke = Stroke::new(1.65, color);
-    painter.rect_stroke(
-        Rect::from_min_max(
-            center + egui::vec2(-5.0, -3.0),
-            center + egui::vec2(5.0, 4.0),
-        ),
-        2.0,
+    let stroke = Stroke::new(1.4, color);
+    // A quarter-inch instrument jack: one metal shaft, a separated tip,
+    // a wider grip and a cable. Local coordinates follow its diagonal axis.
+    let point = |along: f32, across: f32| {
+        center + egui::vec2(along + across, across - along) * std::f32::consts::FRAC_1_SQRT_2
+    };
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            point(0.0, -2.8),
+            point(-5.5, -2.8),
+            point(-7.0, -1.8),
+            point(-7.0, 1.8),
+            point(-5.5, 2.8),
+            point(0.0, 2.8),
+        ],
+        color.gamma_multiply(0.12),
         stroke,
-    );
-    for x in [-3.0, 3.0] {
+    ));
+    for along in [-4.5, -2.5] {
         painter.line_segment(
-            [center + egui::vec2(x, -7.0), center + egui::vec2(x, -3.0)],
-            stroke,
+            [point(along, -2.3), point(along, 2.3)],
+            Stroke::new(1.0, color.gamma_multiply(0.65)),
         );
     }
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            point(0.5, -1.5),
+            point(4.3, -1.5),
+            point(4.3, 1.5),
+            point(0.5, 1.5),
+        ],
+        color,
+        Stroke::NONE,
+    ));
+    // The dark gap is the insulating band of a mono (TS) guitar plug.
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            point(5.6, -1.5),
+            point(8.4, -1.5),
+            point(9.3, -1.0),
+            point(10.0, 0.0),
+            point(9.3, 1.0),
+            point(8.4, 1.5),
+            point(5.6, 1.5),
+        ],
+        color,
+        Stroke::NONE,
+    ));
     painter.add(egui::Shape::line(
         vec![
-            center + egui::vec2(0.0, 4.0),
-            center + egui::vec2(0.0, 8.0),
-            center + egui::vec2(4.0, 8.0),
+            point(-7.0, 0.0),
+            point(-9.5, 0.0),
+            point(-10.0, 2.4),
+            point(-12.0, 2.4),
         ],
         stroke,
     ));

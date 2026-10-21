@@ -19,12 +19,18 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const REPOSITORY: &str = "Chevosky/tuner-compact";
-const LATEST_URL: &str = "https://api.github.com/repos/Chevosky/tuner-compact/releases/latest";
+const REPOSITORY: &str = "Tangram-Space/updates";
+// This repository also publishes other apps. Never use its global latest
+// release: this fixed channel selects Turner's release, which is then verified
+// independently through GitHub's exact-tag API and its versioned asset names.
+const FEED_URL: &str =
+    "https://raw.githubusercontent.com/Tangram-Space/updates/main/feeds/turner/stable/release.json";
+const APP_ID: &str = "turner";
+const CHANNEL: &str = "stable";
 const BUNDLE_ID: &str = "com.tuner.guitar.compact";
-const APP_NAME: &str = "Tuner Compact.app";
+const APP_NAME: &str = "Turner.app";
 const EXECUTABLE: &str = "guitar-tuner-egui";
-const MANIFEST: &str = "tuner-compact-update.json";
+const MANIFEST: &str = "turner-update.json";
 const MAX_ZIP: u64 = 256 * 1024 * 1024;
 const MAX_EXPANDED: u64 = 512 * 1024 * 1024;
 const MAX_ENTRIES: usize = 8192;
@@ -152,7 +158,7 @@ impl UpdateService {
         let worker_token = token.clone();
         let context = context.clone();
         let spawn = thread::Builder::new()
-            .name("tuner-updates".into())
+            .name("turner-updates".into())
             .spawn(move || {
                 let reporter = Reporter { events, context };
                 let outcome = match candidate {
@@ -346,6 +352,13 @@ struct Candidate {
     size: u64,
 }
 
+struct FeedRelease {
+    info: ReleaseInfo,
+    tag: String,
+    asset: String,
+    hash: String,
+}
+
 fn json(bytes: &[u8]) -> Result<Value> {
     serde_json::from_slice(bytes)
         .map_err(|_| fail("GitHub devolvió datos de actualización inválidos."))
@@ -364,6 +377,49 @@ fn number(value: &Value, name: &str) -> Result<u64> {
 }
 fn asset_url(tag: &str, asset: &str) -> String {
     format!("https://github.com/{REPOSITORY}/releases/download/{tag}/{asset}")
+}
+fn release_api_url(tag: &str) -> Result<String> {
+    // Validate before inserting a tag into a URL path. Feed data cannot change
+    // the repository, request another app's tag, or insert path/query syntax.
+    parse_tag(tag)?;
+    Ok(format!(
+        "https://api.github.com/repos/{REPOSITORY}/releases/tags/{tag}"
+    ))
+}
+fn parse_feed(feed: &Value) -> Result<FeedRelease> {
+    let tag = field(feed, "tag")?;
+    let (version, revision) = parse_tag(tag)?;
+    let asset = format!("Turner-v{version}-r{revision}-macos-x86_64.app.zip");
+    let url = asset_url(tag, &asset);
+    let hash = validate_manifest(feed, &version, revision, tag, &asset, &url)?;
+    Ok(FeedRelease {
+        info: ReleaseInfo { version, revision },
+        tag: tag.into(),
+        asset,
+        hash,
+    })
+}
+fn validate_selected_release(release: &Value, tag: &str) -> Result<()> {
+    if release.get("draft") != Some(&Value::Bool(false))
+        || release.get("prerelease") != Some(&Value::Bool(false))
+        || field(release, "tag_name")? != tag
+    {
+        return Err(fail(
+            "La publicación no corresponde a la versión estable de Turner anunciada por el canal.",
+        ));
+    }
+    Ok(())
+}
+fn validate_manifest_pair(feed: &Value, release_manifest: &Value) -> Result<()> {
+    // The publisher uploads this complete JSON as a release asset before
+    // advancing the stable feed. Comparing parsed JSON permits formatting
+    // differences, while keeping hashes, identity and any provenance equal.
+    if feed != release_manifest {
+        return Err(fail(
+            "El canal estable y el manifiesto de la publicación no coinciden. Volvé a buscar actualizaciones más tarde.",
+        ));
+    }
+    Ok(())
 }
 fn release_asset(release: &Value, tag: &str, name: &str, limit: u64) -> Result<(String, u64)> {
     let assets = release
@@ -397,11 +453,11 @@ fn release_asset(release: &Value, tag: &str, name: &str, limit: u64) -> Result<(
 fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
     let temporary = PrivateDir::new(&std::env::temp_dir())?;
     let installed = locate_installed(&temporary.path, token)?;
-    let response = temporary.path.join("release.json");
+    let feed_path = temporary.path.join("feed.json");
     if download(
-        LATEST_URL,
-        &response,
-        1024 * 1024,
+        FEED_URL,
+        &feed_path,
+        16 * 1024,
         token,
         None,
         &temporary.path,
@@ -410,15 +466,22 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
         reporter.send(Event::NoRelease);
         return Ok(());
     }
+    let feed = json(&fs::read(&feed_path)?)?;
+    // Validate every app/channel/identity field before making a request whose
+    // path depends on downloaded data. The feed is the only moving pointer.
+    let selected = parse_feed(&feed)?;
+    let response = temporary.path.join("release.json");
+    require_download(
+        &release_api_url(&selected.tag)?,
+        &response,
+        1024 * 1024,
+        token,
+        None,
+        &temporary.path,
+    )?;
     let release = json(&fs::read(&response)?)?;
-    if release.get("draft") != Some(&Value::Bool(false))
-        || release.get("prerelease") != Some(&Value::Bool(false))
-    {
-        return Err(fail("La publicación no es una versión estable."));
-    }
-    let tag = field(&release, "tag_name")?;
-    // Parse the tag before accepting any URL from the API response.
-    let (version, revision) = parse_tag(tag)?;
+    let tag = selected.tag.as_str();
+    validate_selected_release(&release, tag)?;
     let (manifest_url, _) = release_asset(&release, tag, MANIFEST, 16 * 1024)?;
     let manifest_path = temporary.path.join("manifest.json");
     require_download(
@@ -430,42 +493,45 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
         &temporary.path,
     )?;
     let manifest = json(&fs::read(&manifest_path)?)?;
-    let asset = format!("Tuner-Compact-v{version}-r{revision}-macos-x86_64.app.zip");
-    let (url, size) = release_asset(&release, tag, &asset, MAX_ZIP)?;
-    let hash = validate_manifest(&manifest, &version, revision, tag, &asset, &url)?;
+    validate_manifest_pair(&feed, &manifest)?;
+    let (url, size) = release_asset(&release, tag, &selected.asset, MAX_ZIP)?;
     if let Some(digest) = release["assets"]
         .as_array()
-        .and_then(|assets| assets.iter().find(|a| a["name"].as_str() == Some(&asset)))
+        .and_then(|assets| {
+            assets
+                .iter()
+                .find(|a| a["name"].as_str() == Some(&selected.asset))
+        })
         .and_then(|a| a["digest"].as_str())
     {
-        if digest != format!("sha256:{hash}") {
+        if digest != format!("sha256:{}", selected.hash) {
             return Err(fail(
                 "El hash del manifiesto no coincide con el publicado por GitHub.",
             ));
         }
     }
-    let checksum_name = format!("{asset}.sha256");
+    let checksum_name = format!("{}.sha256", selected.asset);
     let (checksum_url, _) = release_asset(&release, tag, &checksum_name, 1024)?;
     let checksum = temporary.path.join("checksum.txt");
     require_download(&checksum_url, &checksum, 1024, token, None, &temporary.path)?;
-    if parse_checksum(&fs::read(&checksum)?, &asset)? != hash {
+    if parse_checksum(&fs::read(&checksum)?, &selected.asset)? != selected.hash {
         return Err(fail("El manifiesto y el archivo SHA256 no coinciden."));
     }
     cancelled(token)?;
-    if revision <= installed.revision {
+    if selected.info.revision <= installed.revision {
         reporter.send(Event::Checked(None));
     } else {
-        if parse_version(&version)? < parse_version(&installed.version)? {
+        if parse_version(&selected.info.version)? < parse_version(&installed.version)? {
             return Err(fail(
                 "La publicación intenta retroceder la versión instalada.",
             ));
         }
         reporter.send(Event::Checked(Some(Candidate {
-            info: ReleaseInfo { version, revision },
+            info: selected.info,
             installed,
             url,
-            asset,
-            hash,
+            asset: selected.asset,
+            hash: selected.hash,
             size,
         })));
     }
@@ -474,11 +540,11 @@ fn check_update(token: &AtomicBool, reporter: &Reporter) -> Result<()> {
 
 fn parse_tag(tag: &str) -> Result<(String, u64)> {
     let value = tag
-        .strip_prefix("compact-v")
-        .ok_or_else(|| fail("La etiqueta publicada no corresponde a Tuner Compact."))?;
+        .strip_prefix("turner-v")
+        .ok_or_else(|| fail("La etiqueta publicada no corresponde a Turner."))?;
     let (version, revision) = value
         .rsplit_once("-r")
-        .ok_or_else(|| fail("Falta la revisión de Tuner Compact."))?;
+        .ok_or_else(|| fail("Falta la revisión de Turner."))?;
     parse_version(version)?;
     if revision.is_empty()
         || !revision.bytes().all(|b| b.is_ascii_digit())
@@ -500,6 +566,8 @@ fn validate_manifest(
     url: &str,
 ) -> Result<String> {
     for (key, expected) in [
+        ("app_id", APP_ID),
+        ("channel", CHANNEL),
         ("version", version),
         ("tag", tag),
         ("platform", "macos"),
@@ -561,7 +629,7 @@ impl PrivateDir {
                 .as_nanos();
             let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let path = parent.join(format!(
-                ".tuner-compact-update-{}-{nonce:x}-{sequence:x}",
+                ".turner-update-{}-{nonce:x}-{sequence:x}",
                 std::process::id()
             ));
             let mut builder = fs::DirBuilder::new();
@@ -693,7 +761,7 @@ fn download(
     reporter: Option<(&Reporter, u64)>,
     scratch: &Path,
 ) -> Result<u16> {
-    let agent = format!("Tuner-Compact/{APP_VERSION}-r{COMPACT_REVISION}");
+    let agent = format!("Turner/{APP_VERSION}-r{COMPACT_REVISION}");
     let arguments = args(&[
         OsStr::new("-q"),
         OsStr::new("--silent"),
@@ -794,27 +862,34 @@ fn locate_installed(scratch: &Path, token: &AtomicBool) -> Result<Installed> {
         .components()
         .any(|part| part.as_os_str() == "AppTranslocation")
     {
-        return Err(fail("macOS está ejecutando una copia translocada. Cerrá la app, mové Tuner Compact.app a Aplicaciones (o ~/Applications) y abrila desde allí antes de actualizar."));
+        return Err(fail("macOS está ejecutando una copia translocada. Cerrá Turner, mové su archivo .app a Aplicaciones (o ~/Applications) y abrilo desde allí antes de actualizar."));
     }
-    let bundle = executable
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or_else(|| fail("No se encontró el bundle de Tuner Compact."))?
-        .to_path_buf();
-    if bundle.extension() != Some(OsStr::new("app"))
-        || executable != bundle.join("Contents/MacOS").join(EXECUTABLE)
-    {
-        return Err(fail(
-            "La actualización requiere ejecutar Tuner Compact desde su archivo .app.",
-        ));
-    }
+    let bundle = bundle_from_executable(&executable)?;
     validate_bundle(&bundle, APP_VERSION, COMPACT_REVISION, scratch, token)?;
     Ok(Installed {
         bundle,
         version: APP_VERSION.into(),
         revision: COMPACT_REVISION,
     })
+}
+fn bundle_from_executable(executable: &Path) -> Result<PathBuf> {
+    // A legacy bridge can still live in Tuner Compact.app, and a user may have
+    // renamed the bundle. The executable path and bundle metadata establish
+    // identity; installation continues to replace this existing path.
+    let bundle = executable
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .ok_or_else(|| fail("No se encontró el bundle de Turner."))?
+        .to_path_buf();
+    if bundle.extension() != Some(OsStr::new("app"))
+        || executable != bundle.join("Contents/MacOS").join(EXECUTABLE)
+    {
+        return Err(fail(
+            "La actualización requiere ejecutar Turner desde su archivo .app.",
+        ));
+    }
+    Ok(bundle)
 }
 fn validate_bundle(
     bundle: &Path,
@@ -994,7 +1069,7 @@ fn safe_archive_name(name: &[u8]) -> Result<String> {
     }
     let top = trimmed.split('/').next().unwrap_or("");
     if top != APP_NAME && top != "__MACOSX" {
-        return Err(fail("El ZIP contiene archivos fuera de Tuner Compact.app."));
+        return Err(fail("El ZIP contiene archivos fuera de Turner.app."));
     }
     Ok(name.to_string())
 }
@@ -1174,8 +1249,8 @@ fn validate_zip(data: &[u8]) -> Result<()> {
         }
     }
     for required in [
-        "Tuner Compact.app/Contents/Info.plist",
-        "Tuner Compact.app/Contents/MacOS/guitar-tuner-egui",
+        format!("{APP_NAME}/Contents/Info.plist"),
+        format!("{APP_NAME}/Contents/MacOS/{EXECUTABLE}"),
     ] {
         if !file_names.contains(&required.to_ascii_lowercase()) {
             return Err(fail("El ZIP no contiene una app completa."));
@@ -1368,7 +1443,7 @@ fn install_update(
 }
 
 const INSTALLER_SCRIPT: &str = r#"#!/bin/bash
-# This script is shipped as source in Tuner Compact, never downloaded.
+# This script is shipped as source in Turner, never downloaded.
 # macOS Big Sur / Bash 3.2 compatible; no elevated privileges or services.
 set -u
 umask 077

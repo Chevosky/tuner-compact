@@ -1,0 +1,402 @@
+name: Build and publish Turner
+
+# Install this file byte-for-byte as .github/workflows/turner-build.yml in
+# Tangram-Space/updates. A changed release request deliberately pins a new build.
+on:
+  push:
+    branches: [main]
+    paths: [apps/turner/release.json]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the pinned Turner request after all tests and package checks pass'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  release-request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source_repo: ${{ steps.request.outputs.source_repo }}
+      source_sha: ${{ steps.request.outputs.source_sha }}
+      version: ${{ steps.request.outputs.version }}
+      revision: ${{ steps.request.outputs.revision }}
+      tag: ${{ steps.request.outputs.tag }}
+      feed_sha: ${{ steps.request.outputs.feed_sha }}
+      workflow_sha256: ${{ steps.request.outputs.workflow_sha256 }}
+      publish: ${{ steps.request.outputs.publish }}
+    steps:
+      - name: Validate the pinned request and capture the stable-feed lease
+        id: request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // BEGIN TURNER_RELEASE_REQUEST
+            const crypto = require('node:crypto');
+            const fail = (message) => { throw new Error(message); };
+            const requestPath = 'apps/turner/release.json';
+            const feedPath = 'feeds/turner/stable/release.json';
+            const defaultBranch = context.payload.repository?.default_branch;
+            if (context.repo.owner + '/' + context.repo.repo !== 'Tangram-Space/updates' ||
+                defaultBranch !== 'main' || context.ref !== 'refs/heads/main' ||
+                !/^[0-9a-f]{40}$/.test(context.sha)) {
+              fail('Run Turner builds from the default main branch of Tangram-Space/updates.');
+            }
+            const publishing = context.eventName === 'push' ||
+              (context.eventName === 'workflow_dispatch' && String(context.payload.inputs?.publish) === 'true');
+            if (!['push', 'workflow_dispatch'].includes(context.eventName)) fail('Unsupported release event.');
+            const branch = await github.rest.repos.getBranch({ ...context.repo, branch: defaultBranch });
+            if (branch.data.commit.sha !== context.sha) fail('The default branch changed. Run the current request.');
+            const read = async (filename, ref, optional = false) => {
+              try {
+                const { data } = await github.rest.repos.getContent({ ...context.repo, path: filename, ref });
+                if (data.type !== 'file' || data.encoding !== 'base64' ||
+                    !/^[0-9a-f]{40}$/.test(data.sha)) fail('Cannot read ' + filename);
+                const bytes = Buffer.from(data.content, 'base64');
+                if (bytes.length < 1 || bytes.length > 65536) fail('Invalid metadata size: ' + filename);
+                return { bytes, sha: data.sha };
+              } catch (error) {
+                if (optional && error.status === 404) return null;
+                throw error;
+              }
+            };
+            const requested = await read(requestPath, context.sha);
+            const request = JSON.parse(requested.bytes.toString('utf8'));
+            const keys = ['schema_version', 'app_id', 'channel', 'source_repo', 'source_sha', 'version', 'revision'];
+            const versionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+            if (!request || Array.isArray(request) || typeof request !== 'object' ||
+                JSON.stringify(Object.keys(request).sort()) !== JSON.stringify([...keys].sort()) ||
+                request.schema_version !== 1 || request.app_id !== 'turner' || request.channel !== 'stable' ||
+                request.source_repo !== 'Chevosky/tuner-compact' ||
+                !/^[0-9a-f]{40}$/.test(request.source_sha) || typeof request.version !== 'string' ||
+                !versionPattern.test(request.version) || !Number.isSafeInteger(request.revision) ||
+                request.revision < 1 || request.revision > 999999999) {
+              fail('Invalid Turner release request. Pin a complete public source SHA, version and revision.');
+            }
+            if (context.eventName === 'push') {
+              const before = context.payload.before;
+              if (typeof before !== 'string' || !/^[0-9a-f]{40}$/.test(before)) fail('Missing previous push commit.');
+              if (before !== '0'.repeat(40)) {
+                await github.rest.repos.getCommit({ ...context.repo, ref: before });
+                const previous = await read(requestPath, before, true);
+                if (previous) {
+                  const old = JSON.parse(previous.bytes.toString('utf8'));
+                  if (keys.every((key) => old[key] === request[key])) fail('The release request has not changed.');
+                  if (!Number.isSafeInteger(old.revision) || request.revision < old.revision) {
+                    fail('A release request cannot decrease the Turner revision.');
+                  }
+                }
+              }
+            }
+            const feed = await read(feedPath, context.sha, true);
+            if (feed) {
+              const old = JSON.parse(feed.bytes.toString('utf8'));
+              if (old.schema_version !== 1 || old.app_id !== 'turner' || old.channel !== 'stable' ||
+                  !Number.isSafeInteger(old.revision) || old.revision < 1) fail('The existing Turner feed is invalid.');
+              if (publishing && request.revision <= old.revision) fail('Increase the revision above the stable feed.');
+            }
+            const workflow = await read('.github/workflows/turner-build.yml', context.sha);
+            for (const key of ['source_repo', 'source_sha', 'version', 'revision']) core.setOutput(key, String(request[key]));
+            core.setOutput('tag', 'turner-v' + request.version + '-r' + request.revision);
+            core.setOutput('feed_sha', feed ? feed.sha : '');
+            core.setOutput('workflow_sha256', crypto.createHash('sha256').update(workflow.bytes).digest('hex'));
+            core.setOutput('publish', String(publishing));
+            // END TURNER_RELEASE_REQUEST
+
+  macos-intel:
+    needs: release-request
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Check out the exact public source commit
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.release-request.outputs.source_repo }}
+          ref: ${{ needs.release-request.outputs.source_sha }}
+          persist-credentials: false
+
+      - name: Verify the request against the source and deployed workflow
+        env:
+          EXPECTED_SOURCE_SHA: ${{ needs.release-request.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.release-request.outputs.version }}
+          EXPECTED_REVISION: ${{ needs.release-request.outputs.revision }}
+          EXPECTED_WORKFLOW_SHA256: ${{ needs.release-request.outputs.workflow_sha256 }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const version = fs.readFileSync('Cargo.toml', 'utf8').match(/^version = "([0-9.]+)"$/m)?.[1];
+          const revision = fs.readFileSync('egui/src/version.rs', 'utf8').match(/^pub const COMPACT_REVISION: u64 = ([1-9][0-9]*);$/m)?.[1];
+          const workflow = fs.readFileSync('ci/turner/turner-build.yml');
+          const hash = crypto.createHash('sha256').update(workflow).digest('hex');
+          if (version !== process.env.EXPECTED_VERSION || revision !== process.env.EXPECTED_REVISION ||
+              hash !== process.env.EXPECTED_WORKFLOW_SHA256) {
+            throw new Error('Pinned source, request and deployed Turner workflow must agree exactly.');
+          }
+          NODE
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          rustup target add --toolchain 1.96.0 x86_64-apple-darwin
+
+      - name: Test the actual release gates without publishing
+        run: node scripts/test-compact-release.mjs
+
+      - name: Run native tuner tests on macOS Intel
+        run: rustup run 1.96.0 cargo test --locked -p audio-input -p guitar-tuner-egui
+
+      - name: Build and verify the Big Sur package
+        id: package
+        run: bash scripts/build-compact-macos.command
+
+      - name: Validate the updater against the newly built package
+        env:
+          TUNER_QA_RELEASE_ZIP: ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.zip_name }}
+          TUNER_QA_RELEASE_MACHO: ${{ steps.package.outputs.artifact_directory }}/Turner.app/Contents/MacOS/guitar-tuner-egui
+        run: >-
+          rustup run 1.96.0 cargo test --locked -p guitar-tuner-egui
+          updates::tests::real_release_fixture_when_explicitly_provided -- --exact
+
+      - name: Upload only the verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turner-macos-Intel
+          path: |
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.checksum_name }}
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.manifest_name }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish-release:
+    needs: [release-request, macos-intel]
+    if: >-
+      needs.release-request.outputs.publish == 'true' &&
+      needs.macos-intel.result == 'success' && github.repository == 'Tangram-Space/updates'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Source checkout, tests and compilation never receive a write token.
+    permissions:
+      contents: write
+    concurrency:
+      group: turner-stable-publication
+      cancel-in-progress: false
+    steps:
+      - name: Download the artifact from this successful build
+        uses: actions/download-artifact@v4
+        with:
+          name: Turner-macos-Intel
+          path: ${{ runner.temp }}/turner-release
+
+      - name: Publish a complete release, then advance only the Turner feed
+        uses: actions/github-script@v7
+        env:
+          TURNER_ARTIFACT_DIRECTORY: ${{ runner.temp }}/turner-release
+          EXPECTED_SOURCE_REPO: ${{ needs.release-request.outputs.source_repo }}
+          EXPECTED_SOURCE_SHA: ${{ needs.release-request.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.release-request.outputs.version }}
+          EXPECTED_REVISION: ${{ needs.release-request.outputs.revision }}
+          EXPECTED_TAG: ${{ needs.release-request.outputs.tag }}
+          EXPECTED_FEED_SHA: ${{ needs.release-request.outputs.feed_sha }}
+        with:
+          script: |
+            // BEGIN TURNER_RELEASE_PUBLISHER
+            // Tests execute this actual publisher against local fixtures.
+            // This job does not check out or execute the source repository.
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const crypto = require('node:crypto');
+            const expectedRepository = 'Tangram-Space/updates';
+            const feedPath = 'feeds/turner/stable/release.json';
+            const fail = (message) => { throw new Error(message); };
+            const publishing = context.eventName === 'push' ||
+              (context.eventName === 'workflow_dispatch' && String(context.payload.inputs?.publish) === 'true');
+            if (!publishing || context.repo.owner + '/' + context.repo.repo !== expectedRepository ||
+                context.payload.repository?.default_branch !== 'main' || context.ref !== 'refs/heads/main' ||
+                !/^[0-9a-f]{40}$/.test(context.sha) ||
+                process.env.EXPECTED_SOURCE_REPO !== 'Chevosky/tuner-compact' ||
+                !/^[0-9a-f]{40}$/.test(process.env.EXPECTED_SOURCE_SHA ?? '') ||
+                !/^(?:[0-9a-f]{40})?$/.test(process.env.EXPECTED_FEED_SHA ?? 'missing')) {
+              fail('Publication requires an explicit, pinned request on the central default branch.');
+            }
+            const directory = process.env.TURNER_ARTIFACT_DIRECTORY;
+            if (!directory) fail('Missing artifact directory.');
+            const readFile = (name, maximum) => {
+              const filename = path.join(directory, name);
+              const stat = fs.lstatSync(filename);
+              if (!stat.isFile() || stat.size < 1 || stat.size > maximum) fail('Invalid release asset: ' + name);
+              return fs.readFileSync(filename);
+            };
+            const manifestName = 'turner-update.json';
+            const manifestBytes = readFile(manifestName, 16384);
+            const manifest = JSON.parse(manifestBytes.toString('utf8'));
+            const versionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+            if (!manifest || Array.isArray(manifest) || typeof manifest !== 'object' ||
+                manifest.schema_version !== 1 || manifest.app_id !== 'turner' || manifest.channel !== 'stable' ||
+                typeof manifest.version !== 'string' || !versionPattern.test(manifest.version) ||
+                !Number.isSafeInteger(manifest.revision) || manifest.revision < 1 || manifest.revision > 999999999) {
+              fail('Invalid Turner update manifest.');
+            }
+            const tag = 'turner-v' + manifest.version + '-r' + manifest.revision;
+            const zipName = 'Turner-v' + manifest.version + '-r' + manifest.revision + '-macos-x86_64.app.zip';
+            const checksumName = zipName + '.sha256';
+            if (manifest.version !== process.env.EXPECTED_VERSION ||
+                String(manifest.revision) !== process.env.EXPECTED_REVISION ||
+                tag !== process.env.EXPECTED_TAG || manifest.tag !== tag || manifest.asset !== zipName ||
+                manifest.platform !== 'macos' || manifest.arch !== 'x86_64' || manifest.minimum_macos !== '11.0' ||
+                manifest.bundle_id !== 'com.tuner.guitar.compact' || manifest.executable !== 'guitar-tuner-egui' ||
+                manifest.url !== 'https://github.com/' + expectedRepository + '/releases/download/' + tag + '/' + zipName ||
+                typeof manifest.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.sha256)) {
+              fail('Update metadata does not match the successful Intel build.');
+            }
+            const expectedNames = [zipName, checksumName, manifestName].sort();
+            if (JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify(expectedNames)) {
+              fail('The artifact must contain exactly the ZIP, SHA-256 file and manifest.');
+            }
+            const zipBytes = readFile(zipName, 256 * 1024 * 1024);
+            const checksumBytes = readFile(checksumName, 1024);
+            const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+            if (digest(zipBytes) !== manifest.sha256 ||
+                checksumBytes.toString('utf8') !== manifest.sha256 + '  ' + zipName + '\n') {
+              fail('ZIP, manifest and checksum do not agree.');
+            }
+            const files = [
+              { name: zipName, bytes: zipBytes, type: 'application/zip' },
+              { name: checksumName, bytes: checksumBytes, type: 'text/plain' },
+              { name: manifestName, bytes: manifestBytes, type: 'application/json' },
+            ];
+            const verifyLease = async () => {
+              const branch = await github.rest.repos.getBranch({ ...context.repo, branch: 'main' });
+              if (branch.data.commit.sha !== context.sha) fail('The central default branch changed during the build. The feed was not advanced.');
+              let actual = '';
+              try {
+                const { data } = await github.rest.repos.getContent({ ...context.repo, path: feedPath, ref: context.sha });
+                if (data.type !== 'file' || data.encoding !== 'base64') fail('Cannot read the stable feed.');
+                actual = data.sha;
+                const old = JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
+                if (old.schema_version !== 1 || old.app_id !== 'turner' || old.channel !== 'stable' ||
+                    !Number.isSafeInteger(old.revision) || old.revision >= manifest.revision) {
+                  fail('The new revision must advance the Turner stable feed.');
+                }
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+              if (actual !== process.env.EXPECTED_FEED_SHA) fail('The stable feed lease changed.');
+            };
+            await verifyLease();
+            const [tags, releases] = await Promise.all([
+              github.paginate(github.rest.repos.listTags, { ...context.repo, per_page: 100 }),
+              github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 }),
+            ]);
+            const knownTags = new Set([...tags.map((item) => item.name), ...releases.map((item) => item.tag_name)]);
+            const currentVersion = manifest.version.split('.').map(BigInt);
+            for (const previousTag of knownTags) {
+              if (previousTag === tag) continue;
+              const previous = /^turner-v(\d+)\.(\d+)\.(\d+)-r(\d+)$/.exec(previousTag);
+              if (!previous) continue; // Other applications own their tags and releases.
+              if (BigInt(previous[4]) >= BigInt(manifest.revision)) fail('Increase the Turner revision above ' + previousTag);
+              const previousVersion = previous.slice(1, 4).map(BigInt);
+              const difference = currentVersion.findIndex((part, index) => part !== previousVersion[index]);
+              if (difference !== -1 && currentVersion[difference] < previousVersion[difference]) {
+                fail('The application version cannot go backwards from ' + previousTag);
+              }
+            }
+            const verifyAssets = async (release) => {
+              const uploaded = await github.paginate(github.rest.repos.listReleaseAssets, {
+                ...context.repo, release_id: release.id, per_page: 100,
+              });
+              if (uploaded.length !== files.length) fail('The release has an incomplete asset set.');
+              for (const file of files) {
+                const matches = uploaded.filter((asset) => asset.name === file.name);
+                if (matches.length !== 1 || matches[0].state !== 'uploaded' ||
+                    matches[0].size !== file.bytes.length ||
+                    matches[0].digest !== 'sha256:' + digest(file.bytes)) {
+                  fail('GitHub could not verify the uploaded asset ' + file.name);
+                }
+              }
+            };
+            let published;
+            try {
+              if (knownTags.has(tag)) {
+                // A retry may finish a feed write after an earlier successful
+                // publication, but never edits or overwrites an existing release.
+                const existing = releases.filter((release) => release.tag_name === tag);
+                if (existing.length !== 1 || existing[0].draft || existing[0].prerelease) {
+                  fail('The tag is reserved or incomplete; inspect it and use a new revision.');
+                }
+                const ref = await github.rest.git.getRef({ ...context.repo, ref: 'tags/' + tag });
+                if (ref.data.object.type !== 'commit' || ref.data.object.sha !== context.sha) {
+                  fail('The existing release belongs to another release-request commit.');
+                }
+                await verifyAssets(existing[0]);
+                published = existing[0];
+              } else {
+                await github.rest.git.createRef({ ...context.repo, ref: 'refs/tags/' + tag, sha: context.sha });
+                const { data: draft } = await github.rest.repos.createRelease({
+                  ...context.repo, tag_name: tag, target_commitish: context.sha,
+                  name: 'Turner ' + manifest.version + ' · revisión ' + manifest.revision,
+                  body: [
+                    'Afinador para Mac Intel, macOS Big Sur 11.0 o posterior.',
+                    'Descargá **' + zipName + '**. El archivo SHA-256 y el manifest acompañan al paquete verificado.',
+                    'Fuente: https://github.com/' + process.env.EXPECTED_SOURCE_REPO + '/commit/' + process.env.EXPECTED_SOURCE_SHA,
+                    'Solicitud de publicación: ' + context.sha + '.',
+                    'La app conserva el identificador com.tuner.guitar.compact, el icono y las licencias incluidas.',
+                  ].join('\n\n'),
+                  draft: true, prerelease: false, make_latest: 'false',
+                });
+                if (!draft.draft || draft.tag_name !== tag) fail('GitHub did not return the expected draft.');
+                for (const file of files) {
+                  await github.rest.repos.uploadReleaseAsset({
+                    ...context.repo, release_id: draft.id, name: file.name,
+                    headers: { 'content-type': file.type, 'content-length': file.bytes.length },
+                    data: file.bytes,
+                  });
+                }
+                await verifyAssets(draft);
+                const result = await github.rest.repos.updateRelease({
+                  ...context.repo, release_id: draft.id, draft: false, prerelease: false, make_latest: 'false',
+                });
+                published = result.data;
+                if (published.draft || published.prerelease || published.tag_name !== tag) {
+                  fail('GitHub did not confirm a stable release.');
+                }
+              }
+
+              // Only a complete, verified stable release may enter this feed.
+              // The final non-forced ref update is a compare-and-swap: if an
+              // AirPlay or other commit wins the race, its changes are preserved.
+              await verifyLease();
+              const { data: base } = await github.rest.git.getCommit({ ...context.repo, commit_sha: context.sha });
+              const { data: blob } = await github.rest.git.createBlob({
+                ...context.repo, content: manifestBytes.toString('base64'), encoding: 'base64',
+              });
+              const { data: tree } = await github.rest.git.createTree({
+                ...context.repo, base_tree: base.tree.sha,
+                tree: [{ path: feedPath, mode: '100644', type: 'blob', sha: blob.sha }],
+              });
+              const { data: commit } = await github.rest.git.createCommit({
+                ...context.repo, message: 'Update Turner stable feed to ' + tag,
+                tree: tree.sha, parents: [context.sha],
+              });
+              await github.rest.git.updateRef({
+                ...context.repo, ref: 'heads/main', sha: commit.sha, force: false,
+              });
+              core.setOutput('release_url', published.html_url);
+              core.setOutput('feed_commit', commit.sha);
+              core.notice('Published ' + published.html_url + ' and advanced only ' + feedPath);
+            } catch (error) {
+              core.warning('Publication did not finish. Existing tags/releases are never overwritten; a complete release can resume the feed step with the identical artifact and unchanged main/feed lease.');
+              throw error;
+            }
+            // END TURNER_RELEASE_PUBLISHER

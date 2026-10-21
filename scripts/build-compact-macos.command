@@ -4,9 +4,9 @@ set -euo pipefail
 
 readonly TOOLCHAIN="1.96.0"
 readonly TARGET="x86_64-apple-darwin"
-readonly APP_NAME="Tuner Compact"
+readonly APP_NAME="Turner"
 readonly BUNDLE_IDENTIFIER="com.tuner.guitar.compact"
-readonly UPDATE_REPOSITORY="Chevosky/tuner-compact"
+readonly UPDATE_REPOSITORY="Tangram-Space/updates"
 readonly MINIMUM_MACOS="11.0"
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly PLIST_BUDDY="/usr/libexec/PlistBuddy"
@@ -59,7 +59,7 @@ compact_revision="$(sed -n 's/^pub const COMPACT_REVISION: u64 = \([1-9][0-9]*\)
 [[ "$compact_revision" =~ ^[1-9][0-9]*$ && ${#compact_revision} -le 9 ]] \
   || fail "No se pudo leer COMPACT_REVISION de egui/src/version.rs."
 readonly COMPACT_REVISION="$compact_revision"
-readonly RELEASE_TAG="compact-v${version}-r${COMPACT_REVISION}"
+readonly RELEASE_TAG="turner-v${version}-r${COMPACT_REVISION}"
 
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS"
 export SDKROOT="$sdk"
@@ -119,6 +119,9 @@ microphone_description="$("$PLIST_BUDDY" -c 'Print :NSMicrophoneUsageDescription
   || fail "El plist no apunta al ejecutable correcto."
 [[ "$("$PLIST_BUDDY" -c 'Print :CFBundleIdentifier' "$plist")" == "$BUNDLE_IDENTIFIER" ]] \
   || fail "El bundle no tiene el identificador esperado."
+[[ "$("$PLIST_BUDDY" -c 'Print :CFBundleName' "$plist")" == "$APP_NAME" && \
+   "$("$PLIST_BUDDY" -c 'Print :CFBundleDisplayName' "$plist")" == "$APP_NAME" ]] \
+  || fail "El bundle no tiene el nombre Turner."
 [[ "$("$PLIST_BUDDY" -c 'Print :CFBundleShortVersionString' "$plist")" == "$version" ]] \
   || fail "La versión del bundle no coincide con Cargo.toml."
 [[ "$("$PLIST_BUDDY" -c 'Print :CFBundleVersion' "$plist")" == "$COMPACT_REVISION" ]] \
@@ -134,7 +137,7 @@ mkdir -p "$app/Contents/Resources/Licenses"
 cp "$ROOT/LICENSE" "$app/Contents/Resources/Licenses/Tuner-MIT.txt"
 cp "$ROOT/vendor/cpal/LICENSE" "$app/Contents/Resources/Licenses/CPAL-Apache-2.0.txt"
 
-zip_name="Tuner-Compact-v${version}-r${COMPACT_REVISION}-macos-x86_64.app.zip"
+zip_name="Turner-v${version}-r${COMPACT_REVISION}-macos-x86_64.app.zip"
 zip_path="$stage/$zip_name"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
 unzip -tq "$zip_path"
@@ -150,13 +153,15 @@ done
 sha256="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
 [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || fail "No se pudo calcular SHA-256."
 checksum_name="${zip_name}.sha256"
-manifest_name="tuner-compact-update.json"
+manifest_name="turner-update.json"
 printf '%s  %s\n' "$sha256" "$zip_name" > "$stage/$checksum_name"
 # Los campos variables están restringidos a números, puntos y nombres fijos.
 # La URL apunta a una release durable; ejecutar este script no la publica.
 cat > "$stage/$manifest_name" <<EOF
 {
   "schema_version": 1,
+  "app_id": "turner",
+  "channel": "stable",
   "version": "$version",
   "revision": $COMPACT_REVISION,
   "tag": "$RELEASE_TAG",
@@ -190,5 +195,5 @@ fi
 printf '\nCompilación y paquete verificados (Intel; macOS mínimo: %s).\n' "$minimum_versions"
 printf '\nApp: %s\nZIP: %s\n' "$output/$APP_NAME.app" "$output/$zip_name"
 printf 'SHA-256: %s\nManifest: %s\n' "$output/$checksum_name" "$output/$manifest_name"
-printf '\nPodés abrir Tuner Compact.app. La aplicación instalada no se reemplazó.\n'
-printf 'No se publicaron tags ni releases. Actions publica sólo con publish activado o al subir una revisión nueva.\n'
+printf '\nPodés abrir Turner.app. La aplicación instalada no se reemplazó.\n'
+printf 'No se publicaron tags ni releases. El canal estable se publica desde Tangram-Space/updates.\n'

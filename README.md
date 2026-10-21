@@ -1,45 +1,54 @@
-# Tuner Compact para Mac Intel — revisión 3
+# Turner para Mac Intel — revisión 4
 
 Afinador nativo con arco graduado, nota digital y flechas. Conserva los 33
 presets y todas las funciones de Ajustes y Análisis.
 
-Esta revisión agrega actualizaciones desde GitHub Releases, accesibles en
-Ajustes junto a la versión. Conserva el plug de micrófono, el selector con
-búsqueda por instrumento y un mismo icono de diapasón en Finder y en la app
-abierta. La apertura y el cierre de audio se ejecutan fuera de la interfaz;
-se corrige la cancelación y el ciclo de referencias de CPAL/CoreAudio que
-retenía el micrófono.
+Esta revisión cambia el nombre visible a **Turner** y dibuja un **jack de
+instrumento de 6,35 mm** en el botón del micrófono. El icono de la aplicación
+—diapasón negro sobre círculo verde— permanece idéntico. Se conservan la
+identidad del bundle y la carpeta de preferencias de las revisiones anteriores.
 
-**Revisión 3 publicada:** [descargar la app para Mac Intel](https://github.com/Chevosky/tuner-compact/releases/download/compact-v0.1.13-r3/Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip)
-o consultar la [release completa](https://github.com/Chevosky/tuner-compact/releases/tag/compact-v0.1.13-r3).
+Las actualizaciones usan el repositorio compartido
+[Tangram-Space/updates](https://github.com/Tangram-Space/updates), con un
+canal exclusivo de Turner. El afinador no consulta la release global más
+reciente, que puede pertenecer a otra aplicación.
 
-**Verificación:** 51 pruebas integradas aprobadas tanto en Linux como en
-macOS Intel (16 de audio y 35 del cliente), más 26 del proceso de publicación
-con una API GitHub simulada. El verificador de actualizaciones aceptó el ZIP
-y ejecutable recién compilados de r3. La descarga pública coincide con el
-SHA-256 publicado. [Compilación y publicación verificadas](https://github.com/Chevosky/tuner-compact/actions/runs/39624312120).
-La prueba de permisos y pausa con la BRIO debe hacerse en el iMac con
-Big Sur 11.7.10. El reemplazo de la app mediante el actualizador aún requiere
-una prueba física en macOS.
+- [Descargar Turner para Mac Intel](https://github.com/Tangram-Space/updates/releases/download/turner-v0.1.13-r4/Turner-v0.1.13-r4-macos-x86_64.app.zip)
+- [Release r4 y comprobantes](https://github.com/Tangram-Space/updates/releases/tag/turner-v0.1.13-r4)
+- [Canal estable de Turner](https://raw.githubusercontent.com/Tangram-Space/updates/main/feeds/turner/stable/release.json)
 
 ### Actualizaciones desde la app
 
 En **Ajustes**, usar **Buscar actualizaciones** junto a la versión. Cuando
 haya una revisión posterior, **Actualizar y reiniciar** descarga y verifica
-el paquete antes de preparar su reemplazo. La consulta es manual y usa las
-versiones públicas de `Chevosky/tuner-compact`; no necesita iniciar sesión.
-La primera instalación que incluye esta función debe hacerse con el ZIP.
+el paquete antes de preparar su reemplazo. La consulta es manual, no requiere
+iniciar sesión y no afecta el uso del afinador sin conexión.
 
-El canal utiliza Releases, con ZIP, SHA-256 y manifiesto de actualización.
-Los artefactos temporales de Actions siguen disponibles para revisar builds.
-El reemplazo real en macOS todavía no se ha probado: se comprobó el instalador
-en Bash con utilidades del sistema simuladas, incluidas restauración ante
-fallo de apertura y rutas con espacios y caracteres especiales.
+El canal fija la aplicación, la plataforma y una release por su tag exacto.
+Se comparan el feed, el manifiesto de esa release, el SHA-256 y la identidad
+del paquete antes de instalar. HTTPS y SHA-256 no equivalen a una firma de
+editor independiente ni a la notarización de Apple.
 
-### Compilar esta revisión
+La r3 instalada consulta el repositorio anterior. Para migrarla se publica
+allí un paquete puente de r4, únicamente después de verificar la release
+central. Contiene el mismo ejecutable de Turner con una envoltura compatible
+con r3. Actualiza en la misma ruta y evita crear una segunda app. La ruta
+puede seguir llamándose **Tuner Compact.app**; puede renombrarse a
+**Turner.app** con la app cerrada. Las siguientes consultas ya usan el
+repositorio compartido. El ZIP canónico contiene directamente **Turner.app**.
 
-Con Rust 1.96.0 y Xcode Command Line Tools instalados en un Mac Intel,
-ejecutar desde la carpeta del proyecto:
+### Instalar en el iMac
+
+1. Cerrar la app anterior y descomprimir el ZIP de Turner.
+2. Mover **Turner.app** a **Aplicaciones**. Si se instala manualmente sobre
+   Tuner Compact, retirar primero la copia anterior para conservar una sola app.
+3. Abrir Turner, elegir la entrada en **Ajustes** y pulsar el jack: verde al
+   capturar, rojo al silenciar; ámbar mientras se inicia. Permitir el micrófono
+   cuando macOS lo solicite.
+
+### Compilar y publicar
+
+Con Rust 1.96.0 y Xcode Command Line Tools instalados en un Mac Intel:
 
 ```bash
 bash scripts/build-compact-macos.command
@@ -47,25 +56,34 @@ bash scripts/build-compact-macos.command
 
 El script valida los requisitos, compila y crea el ZIP dentro de
 `compact-builds/`. No instala herramientas ni reemplaza la app instalada.
-El workflow de GitHub compila y verifica esta revisión. Un inicio manual
-sólo compila, salvo que se active
-`publish`. Un push a `compact-intel` que incrementa `COMPACT_REVISION` ejecuta
-pruebas y compilación, y publica únicamente si todas las verificaciones pasan.
+El workflow de este repositorio sólo realiza compilaciones manuales.
 
-### Instalar en el iMac
+Las versiones se solicitan en
+[`apps/turner/release.json`](https://github.com/Tangram-Space/updates/blob/main/apps/turner/release.json)
+del repositorio compartido: fija este repositorio de fuentes, un commit
+completo y la versión/revisión. El workflow central prueba y compila ese
+commit con un runner Intel estándar. Un job separado publica los tres
+archivos verificados y sólo entonces avanza el feed de Turner. No modifica
+los canales de otras aplicaciones ni la release global marcada como latest.
+La plantilla del workflow central se conserva en `ci/turner/turner-build.yml`.
 
-1. Descargar el ZIP de la [release r3](https://github.com/Chevosky/tuner-compact/releases/tag/compact-v0.1.13-r3).
-   El artefacto **Tuner-Compact-macos-Intel** de Actions también está disponible
-   durante 14 días; la release es el canal que usa el actualizador.
-2. Cerrar la app anterior y descomprimir
-   **Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip**.
-3. Mover **Tuner Compact.app** a **Aplicaciones** y abrirla.
-4. Elegir la entrada en **Ajustes** y pulsar el plug: verde al capturar,
-   rojo al silenciar; ámbar mientras se inicia. Permitir el micrófono cuando
-   macOS lo solicite.
+### Alcance de las comprobaciones
 
-- [Instrucciones y detalles de Tuner Compact](COMPACT-README.txt)
-- [Workflow de compilación y publicación](.github/workflows/build-compact-macos.yml)
+Las pruebas cubren la selección del canal por aplicación, rechazo de
+paquetes ajenos o incompletos, integridad, identidad del bundle, ZIP y
+Mach-O, cancelación y el instalador con utilidades del sistema simuladas.
+La compilación nativa verifica Intel y macOS mínimo 11.0, y prueba el parser
+contra el ZIP y ejecutable que acaba de producir.
+
+La [r3 anterior](https://github.com/Chevosky/tuner-compact/actions/runs/39624312120)
+pasó 51 pruebas Rust integradas en Linux y macOS Intel, más 26 pruebas de
+publicación. La prueba de permisos, pausa y reinicio con la BRIO debe hacerse
+en el iMac con Big Sur 11.7.10. El reemplazo completo de una app en ejecución
+mediante el actualizador todavía requiere una prueba real en macOS.
+
+- [Instrucciones y funciones conservadas](COMPACT-README.txt)
+- [Compilación manual de fuentes](.github/workflows/build-compact-macos.yml)
+- [Compilación y publicación central](https://github.com/Tangram-Space/updates/actions/workflows/turner-build.yml)
 
 ---
 

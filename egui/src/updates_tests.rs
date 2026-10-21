@@ -66,12 +66,8 @@ fn archive(entries: &[(&str, u32, u32)]) -> Vec<u8> {
 }
 fn required_entries() -> Vec<(&'static str, u32, u32)> {
     vec![
-        ("Tuner Compact.app/Contents/Info.plist", 0o100644, 0),
-        (
-            "Tuner Compact.app/Contents/MacOS/guitar-tuner-egui",
-            0o100755,
-            0,
-        ),
+        ("Turner.app/Contents/Info.plist", 0o100644, 0),
+        ("Turner.app/Contents/MacOS/guitar-tuner-egui", 0o100755, 0),
     ]
 }
 #[test]
@@ -80,9 +76,9 @@ fn zip_rejects_traversal_symlinks_case_aliases_and_excessive_expansion() {
     for name in [
         "../outside",
         "/tmp/outside",
-        "Tuner Compact.app/../outside",
-        "Tuner Compact.app/Contents/../../escape",
-        "Tuner Compact.app/Contents\\outside",
+        "Turner.app/../outside",
+        "Turner.app/Contents/../../escape",
+        "Turner.app/Contents\\outside",
         "Other.app/file",
     ] {
         let mut entries = required_entries();
@@ -90,10 +86,10 @@ fn zip_rejects_traversal_symlinks_case_aliases_and_excessive_expansion() {
         assert!(validate_zip(&archive(&entries)).is_err(), "{name}");
     }
     let mut entries = required_entries();
-    entries.push(("Tuner Compact.app/Contents/link", 0o120777, 0));
+    entries.push(("Turner.app/Contents/link", 0o120777, 0));
     assert!(validate_zip(&archive(&entries)).is_err());
     let mut entries = required_entries();
-    entries.push(("Tuner Compact.app/Contents/INFO.PLIST", 0o100644, 0));
+    entries.push(("Turner.app/Contents/INFO.PLIST", 0o100644, 0));
     assert!(validate_zip(&archive(&entries)).is_err());
     let mut entries = required_entries();
     entries[0].2 = MAX_EXPANDED as u32 + 1;
@@ -108,37 +104,154 @@ fn zip_rejects_local_directory_name_mismatch_and_hidden_prefix() {
     prefixed.extend(archive(&required_entries()));
     assert!(validate_zip(&prefixed).is_err());
     let mut conflict = required_entries();
-    conflict.push(("Tuner Compact.app/Contents/Info.plist/child", 0o100644, 0));
+    conflict.push(("Turner.app/Contents/Info.plist/child", 0o100644, 0));
     assert!(validate_zip(&archive(&conflict)).is_err());
 }
 #[test]
 fn manifest_and_urls_bind_revision_identity_and_exact_repository() {
-    let tag = "compact-v0.1.13-r4";
-    let asset = "Tuner-Compact-v0.1.13-r4-macos-x86_64.app.zip";
+    let tag = "turner-v0.1.13-r4";
+    let asset = "Turner-v0.1.13-r4-macos-x86_64.app.zip";
     let url = asset_url(tag, asset);
     let hash = "ab".repeat(32);
-    let mut manifest = serde_json::json!({"schema_version":1,"version":"0.1.13","revision":4,"tag":tag,"platform":"macos","arch":"x86_64","minimum_macos":"11.0","asset":asset,"url":url,"sha256":hash,"bundle_id":BUNDLE_ID,"executable":EXECUTABLE});
+    let mut manifest = serde_json::json!({"schema_version":1,"app_id":"turner","channel":"stable","version":"0.1.13","revision":4,"tag":tag,"platform":"macos","arch":"x86_64","minimum_macos":"11.0","asset":asset,"url":url,"sha256":hash,"bundle_id":BUNDLE_ID,"executable":EXECUTABLE});
     assert!(validate_manifest(&manifest, "0.1.13", 4, tag, asset, &url).is_ok());
     manifest["bundle_id"] = Value::String("some.other.app".into());
     assert!(validate_manifest(&manifest, "0.1.13", 4, tag, asset, &url).is_err());
     let mut release = serde_json::json!({"assets":[{"name":asset,"browser_download_url":url,"size":10,"state":"uploaded"}]});
     assert!(release_asset(&release, tag, asset, MAX_ZIP).is_ok());
     for bad_url in [
-        "http://github.com/Chevosky/tuner-compact/x",
+        "http://github.com/Tangram-Space/updates/x",
         "https://github.com.attacker.invalid/file",
-        "https://github.com/another/repo/releases/download/compact-v0.1.13-r4/file.zip",
+        "https://github.com/another/repo/releases/download/turner-v0.1.13-r4/file.zip",
+        "https://github.com/Chevosky/tuner-compact/releases/download/compact-v0.1.13-r4/Tuner-Compact-v0.1.13-r4-macos-x86_64.app.zip",
+        "https://github.com/Tangram-Space/updates/releases/download/airplay-v1.0.0/AirPlay.zip",
     ] {
         release["assets"][0]["browser_download_url"] = Value::String(bad_url.into());
         assert!(release_asset(&release, tag, asset, MAX_ZIP).is_err());
     }
     for bad_tag in [
-        "compact-v0.1.13-r0",
-        "compact-v0.1.13-r4/../../x",
+        "turner-v0.1.13-r0",
+        "turner-v0.1.13-r4/../../x",
         "v0.1.13-r4",
-        "compact-v0.1.13-r$(touch file)",
+        "turner-v0.1.13-r$(touch file)",
+        "compact-v0.1.13-r4",
+        "airplay-v0.1.13-r4",
     ] {
         assert!(parse_tag(bad_tag).is_err());
+        assert!(release_api_url(bad_tag).is_err());
     }
+}
+
+fn turner_feed() -> Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "app_id": "turner",
+        "channel": "stable",
+        "version": "0.1.13",
+        "revision": 4,
+        "tag": "turner-v0.1.13-r4",
+        "platform": "macos",
+        "arch": "x86_64",
+        "minimum_macos": "11.0",
+        "asset": "Turner-v0.1.13-r4-macos-x86_64.app.zip",
+        "url": "https://github.com/Tangram-Space/updates/releases/download/turner-v0.1.13-r4/Turner-v0.1.13-r4-macos-x86_64.app.zip",
+        "sha256": "ab".repeat(32),
+        "bundle_id": "com.tuner.guitar.compact",
+        "executable": "guitar-tuner-egui"
+    })
+}
+
+#[test]
+fn per_app_feed_selects_an_exact_release_even_when_other_apps_publish_newer() {
+    let selected = parse_feed(&turner_feed()).unwrap();
+    assert_eq!(selected.info.revision, 4);
+    assert_eq!(
+        release_api_url(&selected.tag).unwrap(),
+        "https://api.github.com/repos/Tangram-Space/updates/releases/tags/turner-v0.1.13-r4"
+    );
+    let mut release = serde_json::json!({
+        "tag_name": "turner-v0.1.13-r4", "draft": false, "prerelease": false
+    });
+    assert!(validate_selected_release(&release, &selected.tag).is_ok());
+    // A global latest release could legitimately be AirPlay. It can never be
+    // substituted for the Turner release announced by this app's own feed.
+    release["tag_name"] = Value::String("airplay-v9.0.0".into());
+    assert!(validate_selected_release(&release, &selected.tag).is_err());
+    release["tag_name"] = Value::String("turner-v0.1.13-r5".into());
+    assert!(validate_selected_release(&release, &selected.tag).is_err());
+    release["tag_name"] = Value::String(selected.tag.clone());
+    release["draft"] = Value::Bool(true);
+    assert!(validate_selected_release(&release, &selected.tag).is_err());
+    release["draft"] = Value::Bool(false);
+    release["prerelease"] = Value::Bool(true);
+    assert!(validate_selected_release(&release, &selected.tag).is_err());
+}
+
+#[test]
+fn feed_rejects_cross_app_channel_identity_and_legacy_release_metadata() {
+    for (key, wrong) in [
+        ("app_id", "airplay"),
+        ("channel", "beta"),
+        ("bundle_id", "some.airplay.app"),
+        ("executable", "AirPlay"),
+        ("version", "0.1.14"),
+        ("tag", "compact-v0.1.13-r4"),
+        ("arch", "aarch64"),
+        ("minimum_macos", "12.0"),
+        ("asset", "Tuner-Compact-v0.1.13-r4-macos-x86_64.app.zip"),
+        (
+            "url",
+            "https://github.com/Tangram-Space/updates/releases/latest/download/AirPlay.zip",
+        ),
+    ] {
+        let mut feed = turner_feed();
+        feed[key] = Value::String(wrong.into());
+        assert!(parse_feed(&feed).is_err(), "{key}");
+    }
+    let mut wrong_revision = turner_feed();
+    wrong_revision["revision"] = Value::from(5);
+    assert!(parse_feed(&wrong_revision).is_err());
+    let mut missing_identity = turner_feed();
+    missing_identity.as_object_mut().unwrap().remove("app_id");
+    assert!(parse_feed(&missing_identity).is_err());
+}
+
+#[test]
+fn stable_feed_and_release_manifest_must_describe_the_identical_artifact() {
+    let feed = turner_feed();
+    let formatted = serde_json::to_vec_pretty(&feed).unwrap();
+    assert!(validate_manifest_pair(&feed, &json(&formatted).unwrap()).is_ok());
+    let mut altered_hash = feed.clone();
+    altered_hash["sha256"] = Value::String("cd".repeat(32));
+    assert!(parse_feed(&altered_hash).is_ok());
+    assert!(validate_manifest_pair(&feed, &altered_hash).is_err());
+    let mut altered_provenance = feed.clone();
+    altered_provenance["source_sha"] = Value::String("0123456789abcdef".into());
+    assert!(validate_manifest_pair(&feed, &altered_provenance).is_err());
+}
+
+#[test]
+fn legacy_installed_path_is_accepted_but_downloaded_archive_requires_turner_root() {
+    for name in ["Turner.app", "Tuner Compact.app", "My Turner.app"] {
+        let bundle = PathBuf::from("/Applications").join(name);
+        let executable = bundle.join("Contents/MacOS/guitar-tuner-egui");
+        assert_eq!(bundle_from_executable(&executable).unwrap(), bundle);
+    }
+    assert!(bundle_from_executable(Path::new("/tmp/guitar-tuner-egui")).is_err());
+    assert!(bundle_from_executable(Path::new(
+        "/Applications/Turner.app/Contents/MacOS/OtherApp"
+    ))
+    .is_err());
+    let old_archive = archive(&[
+        ("Tuner Compact.app/Contents/Info.plist", 0o100644, 0),
+        (
+            "Tuner Compact.app/Contents/MacOS/guitar-tuner-egui",
+            0o100755,
+            0,
+        ),
+    ]);
+    assert!(validate_zip(&old_archive).is_err());
+    assert!(validate_zip(&archive(&required_entries())).is_ok());
 }
 #[test]
 fn checksum_must_name_the_exact_archive_once() {
