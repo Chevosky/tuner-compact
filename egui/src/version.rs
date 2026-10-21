@@ -4,7 +4,7 @@
 //! package version stays the same.
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const COMPACT_REVISION: u64 = 4;
+pub const COMPACT_REVISION: u64 = 5;
 
 pub fn display_version() -> String {
     format!("{} · r{}", APP_VERSION, COMPACT_REVISION)
