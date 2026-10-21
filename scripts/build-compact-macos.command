@@ -5,6 +5,9 @@ set -euo pipefail
 readonly TOOLCHAIN="1.96.0"
 readonly TARGET="x86_64-apple-darwin"
 readonly APP_NAME="Tuner Compact"
+readonly BUNDLE_IDENTIFIER="com.tuner.guitar.compact"
+readonly UPDATE_REPOSITORY="Chevosky/tuner-compact"
+readonly MINIMUM_MACOS="11.0"
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly PLIST_BUDDY="/usr/libexec/PlistBuddy"
 stage=""
@@ -47,9 +50,18 @@ Después volvé a abrir este archivo."
 
 [[ -s "$ROOT/Cargo.lock" ]] || fail "Falta Cargo.lock; usá la carpeta completa del proyecto."
 version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' "$ROOT/Cargo.toml")"
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "No se pudo leer la versión del proyecto."
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+  || fail "No se pudo leer la versión del proyecto."
+# La app, el bundle y la publicación comparten una sola revisión. Aumentarla
+# para cada release; nunca volver a usar una revisión ya publicada.
+[[ -s "$ROOT/egui/src/version.rs" ]] || fail "Falta egui/src/version.rs; usá la carpeta completa del proyecto."
+compact_revision="$(sed -n 's/^pub const COMPACT_REVISION: u64 = \([1-9][0-9]*\);$/\1/p' "$ROOT/egui/src/version.rs")"
+[[ "$compact_revision" =~ ^[1-9][0-9]*$ && ${#compact_revision} -le 9 ]] \
+  || fail "No se pudo leer COMPACT_REVISION de egui/src/version.rs."
+readonly COMPACT_REVISION="$compact_revision"
+readonly RELEASE_TAG="compact-v${version}-r${COMPACT_REVISION}"
 
-export MACOSX_DEPLOYMENT_TARGET="11.0"
+export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS"
 export SDKROOT="$sdk"
 export CARGO_INCREMENTAL="0"
 readonly BUILD_DIRECTORY="$ROOT/target/compact-macos"
@@ -98,32 +110,85 @@ microphone_description="$("$PLIST_BUDDY" -c 'Print :NSMicrophoneUsageDescription
 [[ -n "$microphone_description" ]] || fail "Falta la descripción de uso del micrófono."
 "$PLIST_BUDDY" -c "Set :CFBundleDisplayName $APP_NAME" "$plist"
 "$PLIST_BUDDY" -c "Set :CFBundleName $APP_NAME" "$plist"
-"$PLIST_BUDDY" -c 'Set :CFBundleIdentifier com.tuner.guitar.compact' "$plist"
-"$PLIST_BUDDY" -c 'Set :LSMinimumSystemVersion 11.0' "$plist" 2>/dev/null \
-  || "$PLIST_BUDDY" -c 'Add :LSMinimumSystemVersion string 11.0' "$plist"
+"$PLIST_BUDDY" -c "Set :CFBundleIdentifier $BUNDLE_IDENTIFIER" "$plist"
+"$PLIST_BUDDY" -c "Set :CFBundleVersion ${COMPACT_REVISION}" "$plist"
+"$PLIST_BUDDY" -c "Set :LSMinimumSystemVersion $MINIMUM_MACOS" "$plist" 2>/dev/null \
+  || "$PLIST_BUDDY" -c "Add :LSMinimumSystemVersion string $MINIMUM_MACOS" "$plist"
 /usr/bin/plutil -lint "$plist"
 [[ "$("$PLIST_BUDDY" -c 'Print :CFBundleExecutable' "$plist")" == "guitar-tuner-egui" ]] \
   || fail "El plist no apunta al ejecutable correcto."
+[[ "$("$PLIST_BUDDY" -c 'Print :CFBundleIdentifier' "$plist")" == "$BUNDLE_IDENTIFIER" ]] \
+  || fail "El bundle no tiene el identificador esperado."
+[[ "$("$PLIST_BUDDY" -c 'Print :CFBundleShortVersionString' "$plist")" == "$version" ]] \
+  || fail "La versión del bundle no coincide con Cargo.toml."
+[[ "$("$PLIST_BUDDY" -c 'Print :CFBundleVersion' "$plist")" == "$COMPACT_REVISION" ]] \
+  || fail "La revisión del bundle no coincide con la app."
+[[ "$("$PLIST_BUDDY" -c 'Print :LSMinimumSystemVersion' "$plist")" == "$MINIMUM_MACOS" ]] \
+  || fail "El bundle no declara macOS $MINIMUM_MACOS."
 [[ "$("$PLIST_BUDDY" -c 'Print :NSMicrophoneUsageDescription' "$plist")" == "$microphone_description" ]] \
   || fail "Cambió la descripción de uso del micrófono."
 cmp -s "$BINARY" "$app/Contents/MacOS/guitar-tuner-egui" || fail "El bundle contiene otro ejecutable."
 cmp -s "$ROOT/assets/icons/icon.icns" "$app/Contents/Resources/icon.icns" || fail "El icono del bundle no coincide."
 [[ -x "$app/Contents/MacOS/guitar-tuner-egui" ]] || fail "Falta el permiso de ejecución."
+mkdir -p "$app/Contents/Resources/Licenses"
+cp "$ROOT/LICENSE" "$app/Contents/Resources/Licenses/Tuner-MIT.txt"
+cp "$ROOT/vendor/cpal/LICENSE" "$app/Contents/Resources/Licenses/CPAL-Apache-2.0.txt"
 
-zip_name="Tuner-Compact-v${version}-macos-x86_64.app.zip"
+zip_name="Tuner-Compact-v${version}-r${COMPACT_REVISION}-macos-x86_64.app.zip"
 zip_path="$stage/$zip_name"
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
 unzip -tq "$zip_path"
 archive_entries="$(unzip -Z1 "$zip_path")"
-for entry in Contents/Info.plist Contents/MacOS/guitar-tuner-egui Contents/Resources/icon.icns; do
+for entry in Contents/Info.plist Contents/MacOS/guitar-tuner-egui Contents/Resources/icon.icns \
+  Contents/Resources/Licenses/Tuner-MIT.txt Contents/Resources/Licenses/CPAL-Apache-2.0.txt; do
   grep -Fx "$APP_NAME.app/$entry" <<< "$archive_entries" >/dev/null \
     || fail "Falta $entry en el ZIP final."
 done
 
+[[ "$(wc -c < "$zip_path" | tr -d '[:space:]')" -le 268435456 ]] \
+  || fail "El ZIP supera el límite de 256 MiB del actualizador."
+sha256="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
+[[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || fail "No se pudo calcular SHA-256."
+checksum_name="${zip_name}.sha256"
+manifest_name="tuner-compact-update.json"
+printf '%s  %s\n' "$sha256" "$zip_name" > "$stage/$checksum_name"
+# Los campos variables están restringidos a números, puntos y nombres fijos.
+# La URL apunta a una release durable; ejecutar este script no la publica.
+cat > "$stage/$manifest_name" <<EOF
+{
+  "schema_version": 1,
+  "version": "$version",
+  "revision": $COMPACT_REVISION,
+  "tag": "$RELEASE_TAG",
+  "platform": "macos",
+  "arch": "x86_64",
+  "minimum_macos": "$MINIMUM_MACOS",
+  "bundle_id": "$BUNDLE_IDENTIFIER",
+  "executable": "guitar-tuner-egui",
+  "asset": "$zip_name",
+  "url": "https://github.com/$UPDATE_REPOSITORY/releases/download/$RELEASE_TAG/$zip_name",
+  "sha256": "$sha256"
+}
+EOF
+
 mkdir -p "$ROOT/compact-builds"
-output="$(mktemp -d "$ROOT/compact-builds/compact-${version}-XXXXXX")"
+output="$(mktemp -d "$ROOT/compact-builds/compact-${version}-r${COMPACT_REVISION}-XXXXXX")"
 mv "$app" "$output/$APP_NAME.app"
 mv "$zip_path" "$output/$zip_name"
+mv "$stage/$checksum_name" "$stage/$manifest_name" "$output/"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    printf 'version=%s\n' "$version"
+    printf 'revision=%s\n' "$COMPACT_REVISION"
+    printf 'tag=%s\n' "$RELEASE_TAG"
+    printf 'zip_name=%s\n' "$zip_name"
+    printf 'checksum_name=%s\n' "$checksum_name"
+    printf 'manifest_name=%s\n' "$manifest_name"
+    printf 'artifact_directory=%s\n' "$output"
+  } >> "$GITHUB_OUTPUT"
+fi
 printf '\nCompilación y paquete verificados (Intel; macOS mínimo: %s).\n' "$minimum_versions"
 printf '\nApp: %s\nZIP: %s\n' "$output/$APP_NAME.app" "$output/$zip_name"
+printf 'SHA-256: %s\nManifest: %s\n' "$output/$checksum_name" "$output/$manifest_name"
 printf '\nPodés abrir Tuner Compact.app. La aplicación instalada no se reemplazó.\n'
+printf 'No se publicaron tags ni releases. Actions publica sólo con publish activado o al subir una revisión nueva.\n'

@@ -8,6 +8,8 @@ mod audio;
 mod diagnostics;
 mod state;
 mod tuner_panel;
+mod updates;
+mod version;
 mod visualization;
 
 use app::App;
@@ -18,8 +20,12 @@ fn main() -> eframe::Result<()> {
         // Keep the instrument's dark palette, including on macOS theme changes.
         follow_system_theme: false,
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([680.0, 340.0])
-            .with_min_inner_size([520.0, 290.0]),
+            .with_inner_size([680.0, 294.0])
+            .with_min_inner_size([520.0, 290.0])
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icons/icon.png"))
+                    .expect("the bundled tuner icon is a valid PNG"),
+            ),
         ..Default::default()
     };
     eframe::run_native(

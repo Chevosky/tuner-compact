@@ -1,27 +1,67 @@
-# Tuner Compact para Mac Intel
+# Tuner Compact para Mac Intel — revisión 3
 
-Adaptación del afinador nativo de Tuner con un panel compacto: arco graduado,
-nota digital y flechas para ajustar la afinación. Conserva la entrada de
-micrófono, los presets y las ventanas de Ajustes y Análisis.
+Afinador nativo con arco graduado, nota digital y flechas. Conserva los 33
+presets y todas las funciones de Ajustes y Análisis.
 
-**Compilación verificada:** la [ejecución de GitHub Actions del 21 de octubre de 2026](https://github.com/Chevosky/tuner-compact/actions/runs/39606802118)
-aprobó las 14 pruebas en macOS Intel y generó el paquete con arquitectura
-`x86_64` y macOS mínimo declarado `11.0`. La prueba de funcionamiento y
-micrófono en el iMac con Big Sur 11.7.10 sigue pendiente.
+Esta revisión agrega actualizaciones desde GitHub Releases, accesibles en
+Ajustes junto a la versión. Conserva el plug de micrófono, el selector con
+búsqueda por instrumento y un mismo icono de diapasón en Finder y en la app
+abierta. La apertura y el cierre de audio se ejecutan fuera de la interfaz;
+se corrige la cancelación y el ciclo de referencias de CPAL/CoreAudio que
+retenía el micrófono.
 
-### Instalar en el iMac
+**Verificación local:** 51 pruebas integradas aprobadas (16 de audio y 35
+del cliente), más 26 del proceso de publicación con una API GitHub simulada.
+El verificador de actualizaciones también aceptó el ZIP y ejecutable Mac Intel
+reales de la primera revisión. El workflow verifica la compilación y el
+paquete macOS antes de publicar una release. Este paquete de fuentes no
+incluye una app compilada. La prueba de permisos y pausa con la BRIO debe
+hacerse en el iMac con Big Sur 11.7.10.
 
-1. En esa ejecución, descargar el artefacto **Tuner-Compact-macos-Intel**.
-   Su retención en Actions es de **14 días**, hasta el 4 de noviembre de 2026.
-2. Descomprimir el ZIP y, si contiene otro `.app.zip`, extraerlo también.
-   Mover **Tuner Compact.app** a **Aplicaciones**.
-3. Abrir la app. Si macOS la bloquea por desarrollador no identificado,
-   hacer clic derecho sobre ella y elegir **Abrir**.
-4. Elegir la entrada de audio en **Ajustes**, pulsar **Escuchar** y permitir
-   el acceso al micrófono cuando macOS lo solicite.
+### Actualizaciones desde la app
+
+En **Ajustes**, usar **Buscar actualizaciones** junto a la versión. Cuando
+haya una revisión posterior, **Actualizar y reiniciar** descarga y verifica
+el paquete antes de preparar su reemplazo. La consulta es manual y usa las
+versiones públicas de `Chevosky/tuner-compact`; no necesita iniciar sesión.
+La primera instalación que incluye esta función debe hacerse con el ZIP.
+
+El canal utiliza Releases, con ZIP, SHA-256 y manifiesto de actualización.
+Los artefactos temporales de Actions siguen disponibles para revisar builds.
+El reemplazo real en macOS todavía no se ha probado: se comprobó el instalador
+en Bash con utilidades del sistema simuladas, incluidas restauración ante
+fallo de apertura y rutas con espacios y caracteres especiales.
+
+### Compilar esta revisión
+
+Con Rust 1.96.0 y Xcode Command Line Tools instalados en un Mac Intel,
+ejecutar desde la carpeta del proyecto:
+
+```bash
+bash scripts/build-compact-macos.command
+```
+
+El script valida los requisitos, compila y crea el ZIP dentro de
+`compact-builds/`. No instala herramientas ni reemplaza la app instalada.
+El workflow de GitHub compila y verifica esta revisión. Un inicio manual
+sólo compila, salvo que se active
+`publish`. Un push a `compact-intel` que incrementa `COMPACT_REVISION` ejecuta
+pruebas y compilación, y publica únicamente si todas las verificaciones pasan.
+
+### Instalar en el iMac cuando esté compilada
+
+1. Usar el ZIP creado por el script o descargar el artefacto
+   **Tuner-Compact-macos-Intel** cuando haya una ejecución r3 exitosa del
+   workflow **Build Tuner Compact for Intel** (retención: 14 días).
+2. Cerrar la app anterior y descomprimir
+   **Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip**.
+3. Mover **Tuner Compact.app** a **Aplicaciones** y abrirla.
+4. Elegir la entrada en **Ajustes** y pulsar el plug: verde al capturar,
+   rojo al silenciar; ámbar mientras se inicia. Permitir el micrófono cuando
+   macOS lo solicite.
 
 - [Instrucciones y detalles de Tuner Compact](COMPACT-README.txt)
-- [Workflow manual: Build Tuner Compact for Intel](.github/workflows/build-compact-macos.yml)
+- [Workflow manual](.github/workflows/build-compact-macos.yml)
 
 ---
 

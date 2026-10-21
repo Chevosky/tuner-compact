@@ -1,7 +1,8 @@
-use crate::audio::AudioManager;
+use crate::audio::{AudioEvent, AudioManager, InputStatus};
 use crate::diagnostics::diagnostic_hint;
 use crate::state::{SharedTunerState, TunerViewState};
 use crate::tuner_panel::{self, PanelReading};
+use crate::updates::{UpdateService, UpdateStatus};
 use crate::visualization::VisualizationHistory;
 use eframe::egui;
 use pitch_core::{
@@ -9,6 +10,9 @@ use pitch_core::{
     Tuning,
 };
 use std::sync::{Arc, Mutex};
+
+#[path = "controls.rs"]
+mod controls;
 
 pub(crate) struct App {
     a4: f32,
@@ -19,9 +23,11 @@ pub(crate) struct App {
     settings_open: bool,
     analysis_open: bool,
     compact_layout_pending: bool,
+    preset_selector: controls::PresetSelector,
     state: SharedTunerState,
     tuning_index: usize,
     tunings: Vec<Tuning>,
+    updates: UpdateService,
     visualization: VisualizationHistory,
 }
 
@@ -44,9 +50,11 @@ impl Default for App {
             settings_open: false,
             analysis_open: false,
             compact_layout_pending: true,
+            preset_selector: controls::PresetSelector::default(),
             state: Arc::new(Mutex::new(TunerViewState::default())),
             tuning_index: 0,
             tunings,
+            updates: UpdateService::default(),
             visualization: VisualizationHistory::default(),
         }
     }
@@ -89,7 +97,7 @@ impl App {
         // Migrate only the old oversized window. Subsequent launches retain
         // the user's own window geometry through eframe's existing storage.
         self.compact_layout_pending =
-            storage.get_string("compact_layout_version").as_deref() != Some("1");
+            storage.get_string("compact_layout_version").as_deref() != Some("2");
         self.a4 = parse_or(storage, "a4", self.a4).clamp(420.0, 460.0);
         self.tuning_index = parse_or(storage, "tuning_index", parse_or(storage, "t_idx", 0_usize))
             .min(self.tunings.len().saturating_sub(1));
@@ -112,19 +120,19 @@ impl App {
     }
 
     fn toggle_mic(&mut self, context: &egui::Context) {
-        if self.listening {
+        if matches!(
+            self.audio.input_status(),
+            InputStatus::Starting | InputStatus::Running
+        ) {
             self.audio.stop_input();
-            self.listening = false;
-            self.visualization.clear();
-            if let Ok(mut engine) = self.engine.lock() {
-                engine.reset();
-            }
-            if let Ok(mut state) = self.state.lock() {
-                state.clear_detection();
-            }
+            self.clear_input_display();
+            context.request_repaint();
             return;
         }
+        self.start_mic(context);
+    }
 
+    fn start_mic(&mut self, context: &egui::Context) {
         if self.audio.input_devices.is_empty() {
             self.audio.refresh();
         }
@@ -132,22 +140,59 @@ impl App {
             .audio
             .start_input(self.state.clone(), self.engine.clone(), context.clone())
         {
-            Ok(()) => self.listening = true,
+            Ok(()) => {
+                self.clear_input_display();
+                if let Ok(mut state) = self.state.lock() {
+                    state.error = None;
+                }
+            }
             Err(error) => {
                 if let Ok(mut state) = self.state.lock() {
                     state.error = Some(error);
                 }
             }
         }
+        context.request_repaint();
     }
 
     fn restart_mic(&mut self, context: &egui::Context) {
-        if !self.listening {
-            return;
+        if matches!(
+            self.audio.input_status(),
+            InputStatus::Starting | InputStatus::Running
+        ) {
+            self.start_mic(context);
         }
-        self.audio.stop_input();
+    }
+
+    fn clear_input_display(&mut self) {
         self.listening = false;
-        self.toggle_mic(context);
+        self.visualization.clear();
+        if let Ok(mut engine) = self.engine.lock() {
+            engine.reset();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.clear_detection();
+        }
+    }
+
+    fn poll_audio_events(&mut self, context: &egui::Context) {
+        for event in self.audio.poll(context) {
+            match event {
+                AudioEvent::InputStarted => self.listening = true,
+                AudioEvent::InputStopped => self.clear_input_display(),
+                AudioEvent::InputFailed(error) => {
+                    self.clear_input_display();
+                    if let Ok(mut state) = self.state.lock() {
+                        state.error = Some(error);
+                    }
+                }
+                AudioEvent::ToneFailed(error) | AudioEvent::DeviceRefreshFailed(error) => {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.error = Some(error);
+                    }
+                }
+            }
+        }
     }
 
     fn toggle_reference_tone(&mut self) {
@@ -226,21 +271,8 @@ impl App {
 
     fn tuning_picker(&mut self, ui: &mut egui::Ui, id: &'static str, width: f32) {
         let previous_tuning = self.tuning_index;
-        let name = self
-            .tunings
-            .get(self.tuning_index)
-            .map(tuning_label)
-            .unwrap_or("—");
-        egui::ComboBox::from_id_source(id)
-            .width(width)
-            .selected_text(fit_label(ui, name, width - 42.0))
-            .show_ui(ui, |ui| {
-                for (index, tuning) in self.tunings.iter().enumerate() {
-                    ui.selectable_value(&mut self.tuning_index, index, tuning_label(tuning));
-                }
-            })
-            .response
-            .on_hover_text(name);
+        self.preset_selector
+            .show(ui, id, &self.tunings, &mut self.tuning_index, width);
         if self.tuning_index != previous_tuning {
             if let (Some(tuning), Ok(mut engine)) = (
                 self.tunings.get(self.tuning_index).cloned(),
@@ -251,9 +283,38 @@ impl App {
         }
     }
 
+    fn draw_microphone_button(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let device = self
+            .audio
+            .selected_input_device
+            .as_deref()
+            .unwrap_or("Entrada del sistema");
+        if controls::microphone_button(ui, self.audio.input_status(), device).clicked() {
+            self.toggle_mic(context);
+        }
+    }
+
+    fn draw_updates(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let action = update_settings(
+            ui,
+            &crate::version::display_version(),
+            self.updates.status(),
+        );
+        match action {
+            Some(UpdateAction::Check) => self.updates.check(context),
+            Some(UpdateAction::Install) => self.updates.install(context),
+            Some(UpdateAction::Cancel) => self.updates.cancel(),
+            None => {}
+        }
+    }
+
     fn draw_compact(&mut self, ui: &mut egui::Ui, state: &TunerViewState, context: &egui::Context) {
         let display_note = state.display_note();
-        let target_hint = if self.listening && state.frequency.is_some() {
+        let target_hint = if self.audio.input_status() == InputStatus::Starting {
+            Some("INICIANDO MICRÓFONO…".to_owned())
+        } else if self.audio.input_status() == InputStatus::Stopping {
+            Some("SILENCIANDO MICRÓFONO…".to_owned())
+        } else if self.listening && state.frequency.is_some() {
             state.target.as_ref().map(|target| {
                 format!(
                     "OBJETIVO {} · DETECTADA {}",
@@ -275,25 +336,26 @@ impl App {
             target_hint: target_hint.as_deref(),
         }).on_hover_text("La nota central es la referencia del arco. Flecha izquierda: subir el tono; derecha: bajarlo. Verde: afinado. En Análisis podés ver también la nota detectada.");
 
-        ui.add_space(3.0);
+        ui.add_space(1.0);
         ui.horizontal(|ui| {
-            let label = if self.listening {
-                "Pausar mic."
-            } else {
-                "Escuchar"
-            };
-            if ui
-                .add_sized([88.0, 28.0], egui::Button::new(label))
-                .on_hover_text("Iniciar o detener el micrófono · Espacio / M")
-                .clicked()
-            {
-                self.toggle_mic(context);
+            ui.spacing_mut().item_spacing.x = 7.0;
+            self.draw_microphone_button(ui, context);
+            if self.audio_is_playing_tone() && controls::stop_tone_button(ui).clicked() {
+                self.audio.stop_tone();
             }
-            let picker_width = (ui.available_width() - 172.0).clamp(140.0, 280.0);
+            let diagnostics_count = state.diagnostics.len() + state.backend_diagnostics.len();
+            let picker_width = (ui.available_width() - 172.0).clamp(100.0, 310.0);
             self.tuning_picker(ui, "compact_tuning", picker_width);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let analysis_label = if diagnostics_count > 0 {
+                    egui::RichText::new(format!("Análisis · {diagnostics_count}"))
+                        .color(egui::Color32::from_rgb(224, 183, 107))
+                } else {
+                    egui::RichText::new("Análisis")
+                };
                 if ui
-                    .selectable_label(self.analysis_open, "Análisis")
+                    .selectable_label(self.analysis_open, analysis_label)
+                    .on_hover_text("Señal, espectro, acordes y avisos del micrófono")
                     .clicked()
                 {
                     self.analysis_open = !self.analysis_open;
@@ -303,41 +365,6 @@ impl App {
                 }
             });
         });
-
-        ui.horizontal_wrapped(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(6.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(
-                dot.center(),
-                2.5,
-                if self.listening {
-                    egui::Color32::from_rgb(112, 213, 104)
-                } else {
-                    egui::Color32::from_gray(83)
-                },
-            );
-            let device = self
-                .audio
-                .selected_input_device
-                .as_deref()
-                .unwrap_or("Entrada del sistema");
-            ui.small(fit_label(ui, device, ui.available_width().min(200.0)))
-                .on_hover_text(device);
-            if self.audio_is_playing_tone() && ui.small_button("Detener tono · R").clicked() {
-                self.audio.stop_tone();
-            }
-            if state.is_power {
-                ui.small("Power chord");
-            }
-            let diagnostics_count = state.diagnostics.len() + state.backend_diagnostics.len();
-            if diagnostics_count > 0
-                && ui
-                    .small_button(format!("Avisos: {diagnostics_count}"))
-                    .clicked()
-            {
-                self.analysis_open = true;
-            }
-        });
-        self.draw_errors(ui, state);
     }
 
     fn draw_controls(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
@@ -412,16 +439,15 @@ impl App {
                 self.restart_mic(context);
             }
         });
-        if ui
-            .button(if self.listening {
-                "Detener micrófono"
-            } else {
-                "Iniciar micrófono"
-            })
-            .clicked()
-        {
-            self.toggle_mic(context);
-        }
+        ui.horizontal(|ui| {
+            self.draw_microphone_button(ui, context);
+            ui.label(match self.audio.input_status() {
+                InputStatus::Starting => "Iniciando micrófono… Podés cancelar con el plug.",
+                InputStatus::Running => "Escuchando",
+                InputStatus::Stopping => "Cerrando la entrada de audio…",
+                InputStatus::Stopped => "Micrófono en pausa",
+            });
+        });
 
         ui.add_space(8.0);
         ui.heading("Tonos y entrenamiento auditivo");
@@ -462,6 +488,8 @@ impl App {
         ui.separator();
         ui.small("Espacio / M: micrófono     ·     R: tono de referencia");
         ui.small("Los gráficos, el espectro y los diagnósticos están en Análisis.");
+        ui.add_space(6.0);
+        self.draw_updates(ui, context);
     }
 
     fn draw_analysis(&mut self, ui: &mut egui::Ui, state: &TunerViewState) {
@@ -626,8 +654,18 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_audio_events(context);
+        if self.updates.poll(context) {
+            self.audio.stop_input();
+            self.audio.stop_tone();
+            self.clear_input_display();
+            // Closing the root viewport follows eframe's normal save/exit path.
+            // The updater's helper is already waiting for this process to exit.
+            context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+            return;
+        }
         if self.compact_layout_pending {
-            context.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(680.0, 340.0)));
+            context.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(680.0, 294.0)));
             self.compact_layout_pending = false;
         }
         self.handle_shortcuts(context);
@@ -638,8 +676,17 @@ impl eframe::App for App {
             .unwrap_or_default();
         self.visualization.capture(&state, self.listening);
 
+        if state.error.is_some() {
+            egui::TopBottomPanel::bottom("runtime_error")
+                .frame(
+                    egui::Frame::none()
+                        .fill(context.style().visuals.panel_fill)
+                        .inner_margin(egui::Margin::symmetric(10.0, 6.0)),
+                )
+                .show(context, |ui| self.draw_errors(ui, &state));
+        }
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&context.style()).inner_margin(12.0))
+            .frame(egui::Frame::central_panel(&context.style()).inner_margin(10.0))
             .show(context, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -652,7 +699,7 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string("compact_layout_version", "1".to_owned());
+        storage.set_string("compact_layout_version", "2".to_owned());
         storage.set_string("a4", self.a4.to_string());
         storage.set_string("tuning_index", self.tuning_index.to_string());
         storage.set_string("show_spectrum", self.show_spectrum.to_string());
@@ -667,12 +714,124 @@ impl eframe::App for App {
     }
 }
 
-fn tuning_label(tuning: &Tuning) -> &str {
-    if tuning.strings.is_empty() {
-        "Cromático · todos los instrumentos"
-    } else {
-        tuning.name
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateAction {
+    Check,
+    Install,
+    Cancel,
+}
+
+fn update_settings(
+    ui: &mut egui::Ui,
+    current_version: &str,
+    status: &UpdateStatus,
+) -> Option<UpdateAction> {
+    let mut action = None;
+    let busy = matches!(
+        status,
+        UpdateStatus::Checking
+            | UpdateStatus::Downloading { .. }
+            | UpdateStatus::Preparing
+            | UpdateStatus::ReadyToRestart
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.small(format!("Tuner Compact · {current_version}"));
+        if ui
+            .add_enabled(!busy, egui::Button::new("Buscar actualizaciones").small())
+            .on_hover_text("Consulta las versiones de Tuner Compact en GitHub")
+            .clicked()
+        {
+            action = Some(UpdateAction::Check);
+        }
+    });
+    match status {
+        UpdateStatus::Idle => {}
+        UpdateStatus::Checking => {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.small("Consultando GitHub…");
+                if ui.small_button("Cancelar").clicked() {
+                    action = Some(UpdateAction::Cancel);
+                }
+            });
+        }
+        UpdateStatus::UpToDate => {
+            ui.label(
+                egui::RichText::new("Ya tenés la última versión.")
+                    .small()
+                    .color(egui::Color32::from_rgb(146, 232, 141)),
+            );
+        }
+        UpdateStatus::NoRelease => {
+            ui.small("Todavía no hay una versión publicada.");
+        }
+        UpdateStatus::Available(release) => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Nueva versión disponible: {} · r{}",
+                    release.version, release.revision
+                ))
+                .small()
+                .color(egui::Color32::from_rgb(146, 232, 141)),
+            );
+            if ui
+                .button("Actualizar y reiniciar")
+                .on_hover_text("Descarga esta versión y reinicia Tuner al terminar")
+                .clicked()
+            {
+                action = Some(UpdateAction::Install);
+            }
+        }
+        UpdateStatus::Downloading { received, total } => {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.small(format!(
+                    "Descargando… {:.1} MB",
+                    *received as f64 / 1_000_000.0
+                ));
+                if ui.small_button("Cancelar").clicked() {
+                    action = Some(UpdateAction::Cancel);
+                }
+            });
+            if let Some(total) = total.filter(|total| *total > 0) {
+                let progress = (*received as f64 / total as f64).clamp(0.0, 1.0) as f32;
+                ui.add(
+                    egui::ProgressBar::new(progress)
+                        .show_percentage()
+                        .desired_width(ui.available_width().min(320.0)),
+                );
+            }
+        }
+        UpdateStatus::Preparing | UpdateStatus::ReadyToRestart => {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.small(if matches!(status, UpdateStatus::ReadyToRestart) {
+                    "Reiniciando Tuner…"
+                } else {
+                    "Verificando y preparando la actualización…"
+                });
+                if matches!(status, UpdateStatus::Preparing)
+                    && ui.small_button("Cancelar").clicked()
+                {
+                    action = Some(UpdateAction::Cancel);
+                }
+            });
+        }
+        UpdateStatus::Cancelled => {
+            ui.small("Actualización cancelada.");
+        }
+        UpdateStatus::Error(error) => {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(error)
+                        .small()
+                        .color(egui::Color32::from_rgb(248, 113, 113)),
+                )
+                .wrap(true),
+            );
+        }
     }
+    action
 }
 
 fn fit_label(ui: &egui::Ui, text: &str, max_width: f32) -> String {
@@ -716,4 +875,150 @@ where
 
 fn parse_bool(storage: &dyn eframe::Storage, key: &str) -> bool {
     storage.get_string(key).as_deref() == Some("true")
+}
+
+#[cfg(test)]
+mod update_ui_tests {
+    use super::*;
+    use crate::updates::ReleaseInfo;
+
+    struct Harness {
+        context: egui::Context,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            App::configure_style(&context);
+            Self { context, time: 0.0 }
+        }
+
+        fn frame(
+            &mut self,
+            status: &UpdateStatus,
+            events: Vec<egui::Event>,
+        ) -> (egui::FullOutput, Option<UpdateAction>) {
+            self.time += 1.0 / 30.0;
+            let mut action = None;
+            let output = self.context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(380.0, 300.0),
+                    )),
+                    time: Some(self.time),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        action = update_settings(ui, "0.1.13 · r3", status);
+                    });
+                },
+            );
+            (output, action)
+        }
+
+        fn settle(&mut self, status: &UpdateStatus) -> egui::FullOutput {
+            for _ in 0..2 {
+                assert_eq!(self.frame(status, Vec::new()).1, None);
+            }
+            let (output, action) = self.frame(status, Vec::new());
+            assert_eq!(
+                action, None,
+                "rendering a state must not start an operation"
+            );
+            output
+        }
+
+        fn click(&mut self, status: &UpdateStatus, pos: egui::Pos2) -> Option<UpdateAction> {
+            assert_eq!(
+                self.frame(status, vec![egui::Event::PointerMoved(pos)]).1,
+                None
+            );
+            let event = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            assert_eq!(self.frame(status, vec![event(true)]).1, None);
+            self.frame(status, vec![event(false)]).1
+        }
+    }
+
+    fn button_center(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accessibility is enabled")
+            .nodes
+            .iter()
+            .map(|(_, node)| node)
+            .find(|node| node.role() == egui::accesskit::Role::Button && node.name() == Some(label))
+            .expect("the expected button is present")
+            .bounds()
+            .expect("the button has bounds");
+        assert!(bounds.x0 >= 0.0 && bounds.x1 <= 380.0);
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        )
+    }
+
+    #[test]
+    fn update_operations_require_explicit_clicks() {
+        let mut harness = Harness::new();
+        let output = harness.settle(&UpdateStatus::Idle);
+        assert_eq!(
+            harness.click(
+                &UpdateStatus::Idle,
+                button_center(&output, "Buscar actualizaciones")
+            ),
+            Some(UpdateAction::Check)
+        );
+
+        let available = UpdateStatus::Available(ReleaseInfo {
+            version: "0.1.14".to_owned(),
+            revision: 4,
+        });
+        let output = harness.settle(&available);
+        assert_eq!(
+            harness.click(&available, button_center(&output, "Actualizar y reiniciar")),
+            Some(UpdateAction::Install)
+        );
+
+        let downloading = UpdateStatus::Downloading {
+            received: 1024,
+            total: Some(4096),
+        };
+        let output = harness.settle(&downloading);
+        assert_eq!(
+            harness.click(&downloading, button_center(&output, "Cancelar")),
+            Some(UpdateAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn update_check_cannot_be_restarted_while_busy() {
+        for status in [
+            UpdateStatus::Checking,
+            UpdateStatus::Downloading {
+                received: 1024,
+                total: None,
+            },
+            UpdateStatus::Preparing,
+            UpdateStatus::ReadyToRestart,
+        ] {
+            let mut harness = Harness::new();
+            let output = harness.settle(&status);
+            assert_eq!(
+                harness.click(&status, button_center(&output, "Buscar actualizaciones")),
+                None
+            );
+        }
+    }
 }

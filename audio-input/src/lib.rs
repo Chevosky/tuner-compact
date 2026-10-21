@@ -2,7 +2,7 @@ mod recovery;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -22,6 +22,8 @@ const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 // the native path the same low-string headroom as the browser path.
 const DEFAULT_WINDOW_SIZE: usize = 8_192;
 const MAX_WINDOW_SIZE: usize = 8_192;
+const PROCESSOR_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const INPUT_CANCELLED: &str = "Audio input start was cancelled";
 
 /// Frame handler shared between successive captures of one supervised
 /// session. Locked only on the processor thread, never on the cpal callback.
@@ -129,10 +131,12 @@ struct Capture {
     processor: Option<JoinHandle<()>>,
     stream: Option<Stream>,
     progress: Arc<AtomicU64>,
+    processor_stop: Arc<AtomicBool>,
 }
 
 impl Capture {
-    /// Open the device and build the stream; nothing plays yet.
+    /// Open the device and build the stream. Some cpal backends, including
+    /// CoreAudio 0.15, begin capture while building, before `play` is called.
     ///
     /// The cpal data callback only copies samples into the ring channel and
     /// bumps a relaxed atomic progress counter — no DSP, no allocation, no
@@ -143,7 +147,11 @@ impl Capture {
         on_frame: SharedFrameHandler,
         errors: mpsc::Sender<String>,
         forward_errors: Option<SharedErrorHandler>,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<Self, String> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(INPUT_CANCELLED.to_string());
+        }
         let host = cpal::default_host();
         let device = find_input_device(&host, config.device_name.as_deref())?;
         let supported = device
@@ -153,6 +161,9 @@ impl Capture {
         let stream_config: StreamConfig = supported.into();
         let sample_rate = stream_config.sample_rate.0 as f32;
         let channels = usize::from(stream_config.channels.max(1));
+        if cancelled.load(Ordering::Acquire) {
+            return Err(INPUT_CANCELLED.to_string());
+        }
 
         let (samples_tx, samples_rx) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
         let (pool_tx, pool_rx) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
@@ -165,6 +176,8 @@ impl Capture {
         let processor_pool = pool_tx.clone();
         let window_size = config.window_size;
         let frame_interval = config.frame_interval;
+        let processor_stop = Arc::new(AtomicBool::new(false));
+        let processor_cancelled = processor_stop.clone();
         let processor = thread::spawn(move || {
             process_frames(
                 window_size,
@@ -173,10 +186,20 @@ impl Capture {
                 samples_rx,
                 processor_pool,
                 on_frame,
+                processor_cancelled,
+                cancelled,
             );
         });
         let progress = Arc::new(AtomicU64::new(0));
-        let stream = build_input_stream(
+        // Own the processor before building the native stream, so a backend
+        // error also cancels and joins it instead of detaching its handle.
+        let mut capture = Self {
+            processor: Some(processor),
+            stream: None,
+            progress: progress.clone(),
+            processor_stop,
+        };
+        capture.stream = Some(build_input_stream(
             &device,
             &stream_config,
             sample_format,
@@ -187,13 +210,9 @@ impl Capture {
             errors,
             forward_errors,
             progress.clone(),
-        )?;
+        )?);
 
-        Ok(Self {
-            processor: Some(processor),
-            stream: Some(stream),
-            progress,
-        })
+        Ok(capture)
     }
 
     fn play(&self) -> Result<(), String> {
@@ -205,9 +224,20 @@ impl Capture {
     }
 
     fn stop(&mut self) {
-        self.stream.take();
+        // Processor termination must not depend on the native callback
+        // releasing its sender. In particular, a backend may retain that
+        // callback while stopping or tearing down the device.
+        self.processor_stop.store(true, Ordering::Release);
+        if let Some(stream) = self.stream.take() {
+            if let Err(error) = stream.pause() {
+                eprintln!("Could not pause microphone stream during shutdown: {error}");
+            }
+            drop(stream);
+        }
         if let Some(processor) = self.processor.take() {
-            let _ = processor.join();
+            if processor.join().is_err() {
+                eprintln!("Microphone frame processor panicked during capture");
+            }
         }
     }
 }
@@ -239,6 +269,7 @@ impl InputStream {
             share_frame_handler(on_frame),
             errors_tx,
             Some(share_error_handler(on_error)),
+            Arc::new(AtomicBool::new(false)),
         )?;
         Ok(Self { capture })
     }
@@ -263,6 +294,7 @@ impl InputStream {
 pub struct SupervisedInputStream {
     control: Option<mpsc::Sender<SupervisorCommand>>,
     supervisor: Option<JoinHandle<()>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 enum SupervisorCommand {
@@ -282,6 +314,40 @@ impl SupervisedInputStream {
         ErrorHandler: FnMut(String) + Send + 'static,
         RecoveryHandler: FnMut(RecoveryEvent) + Send + 'static,
     {
+        Self::open_cancellable(
+            config,
+            policy,
+            on_frame,
+            on_error,
+            on_recovery,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    /// Open a supervised input on a control worker, with a token that can be
+    /// set from the UI while a microphone permission prompt is outstanding.
+    ///
+    /// There is deliberately no two-second startup deadline: permission is a
+    /// human decision. This call waits for the native open/cleanup to finish,
+    /// including after cancellation, so callers must keep it off the UI
+    /// thread and serialize attempts. The token cannot interrupt a blocked
+    /// OS call, but late completion is closed without publishing success.
+    pub fn open_cancellable<FrameHandler, ErrorHandler, RecoveryHandler>(
+        config: InputConfig,
+        policy: RecoveryPolicy,
+        on_frame: FrameHandler,
+        on_error: ErrorHandler,
+        on_recovery: RecoveryHandler,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, String>
+    where
+        FrameHandler: FnMut(&[f32], f32) + Send + 'static,
+        ErrorHandler: FnMut(String) + Send + 'static,
+        RecoveryHandler: FnMut(RecoveryEvent) + Send + 'static,
+    {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(INPUT_CANCELLED.to_string());
+        }
         let config = config.normalized();
         let on_frame = share_frame_handler(on_frame);
         let on_error = share_error_handler(on_error);
@@ -297,6 +363,7 @@ impl SupervisedInputStream {
         // synchronously through `ready`.
         let supervisor = {
             let control_tx = control_tx.clone();
+            let cancelled = cancelled.clone();
             thread::spawn(move || {
                 supervise(
                     config,
@@ -311,28 +378,30 @@ impl SupervisedInputStream {
                     on_error,
                     on_recovery,
                     ready_tx,
+                    cancelled,
                 );
             })
         };
 
-        match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(())) => Ok(Self {
+        match wait_for_startup(&ready_rx, &cancelled) {
+            Ok(()) => Ok(Self {
                 control: Some(control_tx),
                 supervisor: Some(supervisor),
+                cancelled,
             }),
-            Ok(Err(error)) => {
-                let _ = supervisor.join();
-                Err(error)
-            }
-            Err(_) => {
+            Err(error) => {
+                cancelled.store(true, Ordering::Release);
                 let _ = control_tx.send(SupervisorCommand::Stop);
                 let _ = supervisor.join();
-                Err("Audio input stream did not start in time".to_string())
+                Err(error)
             }
         }
     }
 
+    /// Stop and release this capture. Native teardown and the thread join can
+    /// block, so this belongs on the same control worker that opens streams.
     pub fn stop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
         if let Some(control) = self.control.take() {
             let _ = control.send(SupervisorCommand::Stop);
         }
@@ -340,6 +409,19 @@ impl SupervisedInputStream {
             let _ = supervisor.join();
         }
     }
+}
+
+fn wait_for_startup(
+    ready: &mpsc::Receiver<Result<(), String>>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let result = ready
+        .recv()
+        .map_err(|_| "Audio input supervisor ended before startup completed".to_string())?;
+    if cancelled.load(Ordering::Acquire) {
+        return Err(INPUT_CANCELLED.to_string());
+    }
+    result
 }
 
 impl Drop for SupervisedInputStream {
@@ -361,6 +443,31 @@ fn emit_recovery(handler: &SharedRecoveryHandler, event: RecoveryEvent) {
     }
 }
 
+fn wait_for_stop(
+    commands: &mpsc::Receiver<SupervisorCommand>,
+    cancelled: &AtomicBool,
+    duration: Duration,
+) -> bool {
+    let started = Instant::now();
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return true;
+        }
+        match commands.try_recv() {
+            Ok(SupervisorCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => return true,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let remaining = duration.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return false;
+        }
+        match commands.recv_timeout(remaining.min(PROCESSOR_POLL_INTERVAL)) {
+            Ok(SupervisorCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return true,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn supervise(
     config: InputConfig,
@@ -370,20 +477,39 @@ fn supervise(
     on_error: SharedErrorHandler,
     on_recovery: SharedRecoveryHandler,
     ready: mpsc::Sender<Result<(), String>>,
+    cancelled: Arc<AtomicBool>,
 ) {
-    let mut capture =
-        match Capture::open(&config, on_frame.clone(), channels.errors_tx.clone(), None) {
-            Ok(capture) => capture,
-            Err(error) => {
-                let _ = ready.send(Err(error));
-                return;
-            }
-        };
+    let mut capture = match Capture::open(
+        &config,
+        on_frame.clone(),
+        channels.errors_tx.clone(),
+        None,
+        cancelled.clone(),
+    ) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+    if cancelled.load(Ordering::Acquire) {
+        capture.stop();
+        let _ = ready.send(Err(INPUT_CANCELLED.to_string()));
+        return;
+    }
     if let Err(error) = capture.play() {
         let _ = ready.send(Err(error));
         return;
     }
-    let _ = ready.send(Ok(()));
+    if cancelled.load(Ordering::Acquire) {
+        capture.stop();
+        let _ = ready.send(Err(INPUT_CANCELLED.to_string()));
+        return;
+    }
+    if ready.send(Ok(())).is_err() {
+        capture.stop();
+        return;
+    }
 
     let mut machine = RecoveryMachine::new(policy.max_attempts, policy.backoff.clone());
     let mut last_progress = capture.progress.load(Ordering::Relaxed);
@@ -391,11 +517,13 @@ fn supervise(
     let mut failure_reported = false;
 
     'outer: loop {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         // Drain cpal stream errors first; each one means the stream is lost.
         let mut lost_reason: Option<String> = None;
-        match channels.commands.recv_timeout(policy.tick) {
-            Ok(SupervisorCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        if wait_for_stop(&channels.commands, &cancelled, policy.tick) {
+            break;
         }
         while let Ok(reason) = channels.errors.try_recv() {
             lost_reason = Some(reason);
@@ -431,6 +559,9 @@ fn supervise(
         // Recovery loop: bounded reopen attempts with backoff.
         let mut step = machine.stream_lost();
         loop {
+            if cancelled.load(Ordering::Acquire) {
+                break 'outer;
+            }
             match step {
                 RecoveryStep::GiveUp => {
                     if !failure_reported {
@@ -462,29 +593,47 @@ fn supervise(
                     );
                     // Interruptible backoff: a stop request aborts
                     // immediately; fresh cpal errors drain on the next tick.
-                    match channels.commands.recv_timeout(delay) {
-                        Ok(SupervisorCommand::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            break 'outer
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    if wait_for_stop(&channels.commands, &cancelled, delay) {
+                        break 'outer;
                     }
                     capture.stop();
-                    match Capture::open(&config, on_frame.clone(), channels.errors_tx.clone(), None)
-                    {
-                        Ok(new_capture) => match new_capture.play() {
-                            Ok(()) => {
-                                capture = new_capture;
-                                machine.attempt_succeeded();
-                                last_progress = capture.progress.load(Ordering::Relaxed);
-                                last_progress_change = Instant::now();
-                                emit_recovery(&on_recovery, RecoveryEvent::Succeeded { attempt });
-                                continue 'outer;
+                    if cancelled.load(Ordering::Acquire) {
+                        break 'outer;
+                    }
+                    match Capture::open(
+                        &config,
+                        on_frame.clone(),
+                        channels.errors_tx.clone(),
+                        None,
+                        cancelled.clone(),
+                    ) {
+                        Ok(mut new_capture) => {
+                            if cancelled.load(Ordering::Acquire) {
+                                new_capture.stop();
+                                break 'outer;
                             }
-                            Err(play_error) => {
-                                reason = play_error;
-                                step = machine.attempt_failed();
+                            match new_capture.play() {
+                                Ok(()) => {
+                                    if cancelled.load(Ordering::Acquire) {
+                                        new_capture.stop();
+                                        break 'outer;
+                                    }
+                                    capture = new_capture;
+                                    machine.attempt_succeeded();
+                                    last_progress = capture.progress.load(Ordering::Relaxed);
+                                    last_progress_change = Instant::now();
+                                    emit_recovery(
+                                        &on_recovery,
+                                        RecoveryEvent::Succeeded { attempt },
+                                    );
+                                    continue 'outer;
+                                }
+                                Err(play_error) => {
+                                    reason = play_error;
+                                    step = machine.attempt_failed();
+                                }
                             }
-                        },
+                        }
                         Err(open_error) => {
                             reason = open_error;
                             step = machine.attempt_failed();
@@ -706,6 +855,7 @@ where
         .map_err(|error| format!("Could not create microphone stream: {error}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_frames(
     window_size: usize,
     frame_interval: Duration,
@@ -713,20 +863,35 @@ fn process_frames(
     samples_rx: mpsc::Receiver<AudioChunk>,
     pool_tx: mpsc::SyncSender<AudioChunk>,
     on_frame: SharedFrameHandler,
+    stopped: Arc<AtomicBool>,
+    cancelled: Arc<AtomicBool>,
 ) {
     let mut ring = SampleWindow::new(window_size);
     let mut window = vec![0.0; window_size];
     let mut last_frame = Instant::now() - frame_interval;
 
-    while let Ok(chunk) = samples_rx.recv() {
+    while !stopped.load(Ordering::Acquire) && !cancelled.load(Ordering::Acquire) {
+        let chunk = match samples_rx.recv_timeout(PROCESSOR_POLL_INTERVAL) {
+            Ok(chunk) => chunk,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        if stopped.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire) {
+            break;
+        }
         ring.push(&chunk.samples[..chunk.length]);
         if last_frame.elapsed() >= frame_interval && ring.copy_ordered(&mut window) {
             last_frame = Instant::now();
             if let Ok(mut on_frame) = on_frame.lock() {
+                if stopped.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire) {
+                    break;
+                }
                 on_frame(&window, sample_rate);
             }
         }
-        let _ = pool_tx.send(chunk);
+        // Returning a recycled buffer must not prevent cancellation when a
+        // backend has stopped consuming its pool but still owns the receiver.
+        let _ = pool_tx.try_send(chunk);
     }
 }
 
@@ -748,5 +913,172 @@ mod tests {
         let mut ring = SampleWindow::new(4);
         ring.push(&[1.0, 2.0]);
         assert!(!ring.copy_ordered(&mut [0.0; 4]));
+    }
+
+    fn spawn_test_processor(
+        samples: mpsc::Receiver<AudioChunk>,
+        pool: mpsc::SyncSender<AudioChunk>,
+        on_frame: SharedFrameHandler,
+        stopped: Arc<AtomicBool>,
+        cancelled: Arc<AtomicBool>,
+    ) -> (JoinHandle<()>, mpsc::Receiver<()>) {
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            process_frames(
+                64,
+                Duration::from_millis(1),
+                48_000.0,
+                samples,
+                pool,
+                on_frame,
+                stopped,
+                cancelled,
+            );
+            let _ = finished_tx.send(());
+        });
+        (thread, finished_rx)
+    }
+
+    #[test]
+    fn processor_stops_while_native_callback_still_owns_sender() {
+        let (_callback_sender, samples) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
+        let (pool, _callback_pool) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (processor, finished) = spawn_test_processor(
+            samples,
+            pool,
+            share_frame_handler(|_, _| panic!("empty input must not produce a frame")),
+            stopped.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        stopped.store(true, Ordering::Release);
+        finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("stop must not wait for the backend to destroy its callback");
+        processor.join().unwrap();
+    }
+
+    #[test]
+    fn session_cancellation_discards_already_queued_audio() {
+        let (samples_tx, samples) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
+        let (pool, _callback_pool) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
+        let mut chunk = AudioChunk::new();
+        chunk.length = 64;
+        samples_tx.send(chunk).unwrap();
+        let (processor, finished) = spawn_test_processor(
+            samples,
+            pool,
+            share_frame_handler(|_, _| panic!("cancelled session must not publish a frame")),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(true)),
+        );
+        finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("queued audio must not delay cancellation");
+        processor.join().unwrap();
+    }
+
+    #[test]
+    fn full_recycle_pool_does_not_block_processor_shutdown() {
+        let (samples_tx, samples) = mpsc::sync_channel(AUDIO_CHUNK_POOL_SIZE);
+        let (pool, _callback_pool) = mpsc::sync_channel(1);
+        pool.send(AudioChunk::new()).unwrap();
+        let mut chunk = AudioChunk::new();
+        chunk.length = 64;
+        chunk.samples[..64].fill(0.25);
+        samples_tx.send(chunk).unwrap();
+
+        let (frame_tx, frame_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (processor, finished) = spawn_test_processor(
+            samples,
+            pool,
+            share_frame_handler(move |samples, sample_rate| {
+                assert_eq!(samples, &[0.25; 64]);
+                assert_eq!(sample_rate, 48_000.0);
+                frame_tx.send(()).unwrap();
+            }),
+            stopped.clone(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        frame_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the active session should process its unchanged sample window");
+        stopped.store(true, Ordering::Release);
+        finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("returning a buffer to a retained full pool must not block stop");
+        processor.join().unwrap();
+    }
+
+    #[test]
+    fn permission_response_can_take_more_than_two_seconds() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let backend = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(2_100));
+            ready_tx.send(Ok(())).unwrap();
+        });
+        assert_eq!(wait_for_startup(&ready_rx, &AtomicBool::new(false)), Ok(()));
+        backend.join().unwrap();
+    }
+
+    #[test]
+    fn cancelled_start_waits_for_native_completion_and_rejects_late_success() {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(wait_for_startup(&ready_rx, &worker_cancelled))
+                .unwrap();
+        });
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            finished_rx.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        ready_tx.send(Ok(())).unwrap();
+        assert_eq!(
+            finished_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Err(INPUT_CANCELLED.to_string())
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn pre_cancelled_start_returns_without_accessing_audio_backend() {
+        let result = SupervisedInputStream::open_cancellable(
+            InputConfig {
+                device_name: Some("not a physical test device".to_string()),
+                ..InputConfig::default()
+            },
+            RecoveryPolicy::default(),
+            |_, _| panic!("cancelled start must not publish audio"),
+            |_| panic!("cancelled start must not report a device failure"),
+            |_| panic!("cancelled start must not attempt recovery"),
+            Arc::new(AtomicBool::new(true)),
+        );
+        assert_eq!(result.err(), Some(INPUT_CANCELLED.to_string()));
+    }
+
+    #[test]
+    fn cancellation_interrupts_recovery_backoff_without_a_control_message() {
+        let (_control, commands) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            finished_tx
+                .send(wait_for_stop(
+                    &commands,
+                    &worker_cancelled,
+                    Duration::from_secs(5),
+                ))
+                .unwrap();
+        });
+        cancelled.store(true, Ordering::Release);
+        assert!(finished_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        worker.join().unwrap();
     }
 }
