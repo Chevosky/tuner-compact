@@ -7,18 +7,40 @@ Fecha: 21 de octubre de 2026
 
 ESTADO DE ESTA ENTREGA
 
-Este repositorio contiene el código fuente modificado, un script de
-compilación para el iMac y un workflow manual de GitHub Actions. Está prevista
-la compilación de la rama compact-intel del fork indicado arriba. Todavía no
-se ha confirmado una ejecución exitosa ni un artefacto .app para macOS.
+La compilación de la rama compact-intel terminó correctamente en macOS Intel
+el 21 de octubre de 2026. Se generó Tuner Compact.app dentro de un ZIP y se
+verificaron su arquitectura x86_64, el macOS mínimo declarado 11.0, el plist,
+la descripción de uso del micrófono, el icono y la integridad del ZIP.
 
-La interfaz compila en Linux y las 14 pruebas del cliente nativo pasan,
-incluidas dos regresiones nuevas sobre coherencia de nota/cents y silencio.
+Ejecución verificada:
+https://github.com/Chevosky/tuner-compact/actions/runs/39606802118
+Código compilado: 56af317a8402c7b8d7481be59243521673cdf593
+
+Las 14 pruebas del cliente nativo pasaron tanto en Linux como en el runner
+macOS Intel, incluidas dos regresiones nuevas sobre coherencia de nota/cents
+y silencio.
 La interfaz real también se ejecutó en Linux para comprobar los tamaños
 680 x 340 y 520 x 290, los presets con nombres largos, el cierre y reapertura
 de las ventanas de Ajustes y Análisis, y el acceso a sus controles.
-La validación final de captura de micrófono y ejecución en Big Sur debe
-hacerse con el binario macOS en el iMac.
+La validación final de captura de micrófono y ejecución en Big Sur 11.7.10
+sigue pendiente y debe hacerse con el binario macOS en el iMac.
+
+INSTALAR LA APP EN EL IMAC
+
+1. Abrir la ejecución de GitHub Actions enlazada arriba y descargar el
+   artefacto "Tuner-Compact-macos-Intel".
+2. Descomprimir el ZIP descargado. Si dentro aparece
+   Tuner-Compact-v0.1.13-macos-x86_64.app.zip, descomprimirlo también hasta
+   obtener Tuner Compact.app.
+3. Mover Tuner Compact.app a la carpeta Aplicaciones y abrirla.
+4. Si macOS la bloquea por desarrollador no identificado, hacer clic derecho
+   sobre Tuner Compact.app y elegir Abrir; confirmar la apertura.
+5. En Ajustes, elegir la entrada de audio. Pulsar Escuchar y permitir el
+   acceso al micrófono cuando macOS lo solicite.
+
+El artefacto de Actions tiene una retención de 14 días, hasta el 4 de
+noviembre de 2026. La descarga corresponde a esa ejecución; no se creó
+una publicación en Releases.
 
 DISEÑO Y CONTROLES
 
@@ -91,7 +113,7 @@ y Rust 1.96.0 instalado mediante rustup. No hace falta Homebrew.
 
 El script usa Cargo.lock, Rust 1.96.0, el target x86_64-apple-darwin y el mínimo
 MACOSX_DEPLOYMENT_TARGET=11.0. Verifica la arquitectura, el mínimo de macOS,
-el plist, el permiso de micrófono, el icono y el ZIP. Esa verificación del
+el plist, la descripción de uso del micrófono, el icono y el ZIP. Esa verificación del
 paquete no reemplaza la prueba de funcionamiento en el iMac.
 
 COMPILAR EN GITHUB ACTIONS
@@ -100,17 +122,19 @@ Fork: https://github.com/Chevosky/tuner-compact
 Rama a compilar: compact-intel
 Definición: .github/workflows/build-compact-macos.yml
 
-Está previsto iniciar manualmente el workflow "Build Tuner Compact for Intel"
-desde Actions sobre la rama compact-intel. Está configurado para usar un
-runner macos-15-intel, ejecutar las pruebas del cliente en macOS y producir
-el mismo ZIP mediante scripts/build-compact-macos.command.
+El workflow "Build Tuner Compact for Intel" se inicia manualmente desde
+Actions sobre la rama compact-intel. Usa un runner macos-15-intel, ejecuta
+las pruebas del cliente en macOS y produce el ZIP mediante
+scripts/build-compact-macos.command.
 
-Si la ejecución termina correctamente, el ZIP se podrá descargar del artefacto
-"Tuner-Compact-macos-Intel" de esa ejecución. Su retención está configurada
-en 14 días. El workflow compacto no crea releases ni tags; los permisos del
+La ejecución 39606802118 terminó con éxito: 14 pruebas aprobadas, compilación
+release y verificaciones del paquete correctas. El artefacto generado en
+Actions es "Tuner-Compact-macos-Intel" (ID 12349431371), con retención de
+14 días. El workflow compacto no crea releases ni tags; los permisos del
 repositorio son sólo de lectura durante el build.
 
-La ejecución y el artefacto macOS permanecen pendientes de verificación.
+Compilar y revisar el paquete en macOS 15 no reemplaza la prueba de audio y
+funcionamiento en el iMac con Big Sur 11.7.10.
 
 ORIGEN Y LICENCIA
 

@@ -4,8 +4,21 @@ Adaptación del afinador nativo de Tuner con un panel compacto: arco graduado,
 nota digital y flechas para ajustar la afinación. Conserva la entrada de
 micrófono, los presets y las ventanas de Ajustes y Análisis.
 
-La compilación para Intel y macOS 11 está preparada en un workflow manual;
-su ejecución y el artefacto macOS están pendientes de verificación.
+**Compilación verificada:** la [ejecución de GitHub Actions del 21 de octubre de 2026](https://github.com/Chevosky/tuner-compact/actions/runs/39606802118)
+aprobó las 14 pruebas en macOS Intel y generó el paquete con arquitectura
+`x86_64` y macOS mínimo declarado `11.0`. La prueba de funcionamiento y
+micrófono en el iMac con Big Sur 11.7.10 sigue pendiente.
+
+### Instalar en el iMac
+
+1. En esa ejecución, descargar el artefacto **Tuner-Compact-macos-Intel**.
+   Su retención en Actions es de **14 días**, hasta el 4 de noviembre de 2026.
+2. Descomprimir el ZIP y, si contiene otro `.app.zip`, extraerlo también.
+   Mover **Tuner Compact.app** a **Aplicaciones**.
+3. Abrir la app. Si macOS la bloquea por desarrollador no identificado,
+   hacer clic derecho sobre ella y elegir **Abrir**.
+4. Elegir la entrada de audio en **Ajustes**, pulsar **Escuchar** y permitir
+   el acceso al micrófono cuando macOS lo solicite.
 
 - [Instrucciones y detalles de Tuner Compact](COMPACT-README.txt)
 - [Workflow manual: Build Tuner Compact for Intel](.github/workflows/build-compact-macos.yml)
