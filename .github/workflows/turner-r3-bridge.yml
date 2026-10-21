@@ -1,0 +1,230 @@
+name: Migrate Tuner Compact r3 to Turner
+
+# One-time compatibility channel for already installed r3 clients.
+# Add this marker only after the canonical Turner release AND feed are verified.
+on:
+  push:
+    branches: [compact-intel]
+    paths: [ci/turner/r3-bridge.json]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the one-time, explicitly pinned r3 compatibility bridge'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verified-repack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+      revision: ${{ steps.package.outputs.revision }}
+      tag: ${{ steps.package.outputs.tag }}
+      canonical_tag: ${{ steps.package.outputs.canonical_tag }}
+      canonical_manifest_sha256: ${{ steps.package.outputs.canonical_manifest_sha256 }}
+      legacy_manifest_sha256: ${{ steps.package.outputs.legacy_manifest_sha256 }}
+    steps:
+      - name: Require the current source default branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.repo.owner + '/' + context.repo.repo !== 'Chevosky/tuner-compact' ||
+                context.ref !== 'refs/heads/' + context.payload.repository?.default_branch) {
+              throw new Error('The compatibility bridge belongs to the source default branch.');
+            }
+            const branch = await github.rest.repos.getBranch({
+              ...context.repo, branch: context.payload.repository.default_branch,
+            });
+            if (branch.data.commit.sha !== context.sha) throw new Error('Run the current explicit bridge marker.');
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Test download, repack and publication gates without network writes
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 scripts/test-turner-r3-bridge.py
+          node scripts/test-turner-r3-bridge.mjs
+
+      - name: Verify the canonical channel and repack only the bundle root
+        id: package
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: >-
+          python3 scripts/repack-turner-r3-bridge.py ci/turner/r3-bridge.json
+          "$RUNNER_TEMP/turner-r3-bridge"
+
+      - name: Upload the verified compatibility assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turner-r3-bridge
+          path: |
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.zip_name }}
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.checksum_name }}
+            ${{ steps.package.outputs.artifact_directory }}/${{ steps.package.outputs.manifest_name }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish-bridge:
+    needs: verified-repack
+    if: >-
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)) &&
+      needs.verified-repack.result == 'success' && github.repository == 'Chevosky/tuner-compact'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: tuner-compact-release-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Turner-r3-bridge
+          path: ${{ runner.temp }}/turner-r3-bridge
+
+      - name: Publish a complete bridge for the legacy r3 update checker
+        uses: actions/github-script@v7
+        env:
+          BRIDGE_ARTIFACT_DIRECTORY: ${{ runner.temp }}/turner-r3-bridge
+          EXPECTED_VERSION: ${{ needs.verified-repack.outputs.version }}
+          EXPECTED_REVISION: ${{ needs.verified-repack.outputs.revision }}
+          EXPECTED_TAG: ${{ needs.verified-repack.outputs.tag }}
+          EXPECTED_CANONICAL_TAG: ${{ needs.verified-repack.outputs.canonical_tag }}
+          EXPECTED_CANONICAL_MANIFEST_SHA256: ${{ needs.verified-repack.outputs.canonical_manifest_sha256 }}
+          EXPECTED_LEGACY_MANIFEST_SHA256: ${{ needs.verified-repack.outputs.legacy_manifest_sha256 }}
+        with:
+          script: |
+            // BEGIN TURNER_BRIDGE_PUBLISHER
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const crypto = require('node:crypto');
+            const fail = (message) => { throw new Error(message); };
+            const digest = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+            const defaultBranch = context.payload.repository?.default_branch;
+            if (!(context.eventName === 'push' ||
+                  (context.eventName === 'workflow_dispatch' && String(context.payload.inputs?.publish) === 'true')) ||
+                context.repo.owner + '/' + context.repo.repo !== 'Chevosky/tuner-compact' ||
+                !defaultBranch || context.ref !== 'refs/heads/' + defaultBranch ||
+                !/^[0-9a-f]{40}$/.test(context.sha)) fail('The bridge requires an explicit marker on the source default branch.');
+            const directory = process.env.BRIDGE_ARTIFACT_DIRECTORY;
+            if (!directory) fail('Missing bridge artifact directory.');
+            const read = (name, maximum) => {
+              const filename = path.join(directory, name), stat = fs.lstatSync(filename);
+              if (!stat.isFile() || stat.size < 1 || stat.size > maximum) fail('Invalid bridge asset: ' + name);
+              return fs.readFileSync(filename);
+            };
+            const manifestName = 'tuner-compact-update.json';
+            const manifestBytes = read(manifestName, 16384);
+            if (digest(manifestBytes) !== process.env.EXPECTED_LEGACY_MANIFEST_SHA256) fail('The verified bridge manifest changed.');
+            const manifest = JSON.parse(manifestBytes.toString('utf8'));
+            if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) ||
+                manifest.schema_version !== 1 || typeof manifest.version !== 'string' ||
+                !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(manifest.version) ||
+                !Number.isSafeInteger(manifest.revision) || manifest.revision <= 3 || manifest.revision > 999999999) {
+              fail('Invalid legacy bridge version.');
+            }
+            const tag = 'compact-v' + manifest.version + '-r' + manifest.revision;
+            const canonicalTag = 'turner-v' + manifest.version + '-r' + manifest.revision;
+            const zipName = 'Tuner-Compact-v' + manifest.version + '-r' + manifest.revision + '-macos-x86_64.app.zip';
+            const checksumName = zipName + '.sha256';
+            if (manifest.version !== process.env.EXPECTED_VERSION || String(manifest.revision) !== process.env.EXPECTED_REVISION ||
+                tag !== process.env.EXPECTED_TAG || tag !== manifest.tag || manifest.asset !== zipName ||
+                canonicalTag !== process.env.EXPECTED_CANONICAL_TAG ||
+                !/^[0-9a-f]{64}$/.test(process.env.EXPECTED_CANONICAL_MANIFEST_SHA256 ?? '') ||
+                manifest.platform !== 'macos' || manifest.arch !== 'x86_64' || manifest.minimum_macos !== '11.0' ||
+                manifest.bundle_id !== 'com.tuner.guitar.compact' || manifest.executable !== 'guitar-tuner-egui' ||
+                manifest.url !== 'https://github.com/Chevosky/tuner-compact/releases/download/' + tag + '/' + zipName ||
+                typeof manifest.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.sha256)) {
+              fail('Bridge metadata does not match the verified canonical package.');
+            }
+            if (JSON.stringify(fs.readdirSync(directory).sort()) !== JSON.stringify([zipName, checksumName, manifestName].sort())) {
+              fail('The bridge artifact must contain exactly its three assets.');
+            }
+            const zipBytes = read(zipName, 256 * 1024 * 1024), checksumBytes = read(checksumName, 1024);
+            if (digest(zipBytes) !== manifest.sha256 ||
+                checksumBytes.toString('utf8') !== manifest.sha256 + '  ' + zipName + '\n') {
+              fail('The bridge ZIP, checksum and manifest do not agree.');
+            }
+            const branch = await github.rest.repos.getBranch({ ...context.repo, branch: defaultBranch });
+            if (branch.data.commit.sha !== context.sha) fail('The source branch changed during verification.');
+            const { data: markerFile } = await github.rest.repos.getContent({
+              ...context.repo, ref: context.sha, path: 'ci/turner/r3-bridge.json',
+            });
+            if (markerFile.type !== 'file' || markerFile.encoding !== 'base64') fail('Missing explicit bridge marker.');
+            const marker = JSON.parse(Buffer.from(markerFile.content, 'base64').toString('utf8'));
+            if (marker.schema_version !== 1 || marker.app_id !== 'turner' || marker.from_revision !== 3 ||
+                marker.canonical_tag !== canonicalTag ||
+                marker.canonical_manifest_sha256 !== process.env.EXPECTED_CANONICAL_MANIFEST_SHA256) {
+              fail('The explicit bridge marker does not match the verified canonical release.');
+            }
+            const [tags, releases] = await Promise.all([
+              github.paginate(github.rest.repos.listTags, { ...context.repo, per_page: 100 }),
+              github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 }),
+            ]);
+            const knownTags = new Set([...tags.map((item) => item.name), ...releases.map((item) => item.tag_name)]);
+            const currentVersion = manifest.version.split('.').map(BigInt);
+            for (const previousTag of knownTags) {
+              const previous = /^compact-v(\d+)\.(\d+)\.(\d+)-r(\d+)$/.exec(previousTag);
+              if (!previous) continue;
+              if (BigInt(previous[4]) > 3n) fail('A post-r3 legacy tag already exists. The one-time bridge never overwrites or repeats.');
+              const previousVersion = previous.slice(1, 4).map(BigInt);
+              const difference = currentVersion.findIndex((part, index) => part !== previousVersion[index]);
+              if (difference !== -1 && currentVersion[difference] < previousVersion[difference]) fail('The bridge cannot decrease the application version.');
+            }
+            const files = [
+              { name: zipName, bytes: zipBytes, type: 'application/zip' },
+              { name: checksumName, bytes: checksumBytes, type: 'text/plain' },
+              { name: manifestName, bytes: manifestBytes, type: 'application/json' },
+            ];
+            await github.rest.git.createRef({ ...context.repo, ref: 'refs/tags/' + tag, sha: context.sha });
+            try {
+              const { data: draft } = await github.rest.repos.createRelease({
+                ...context.repo, tag_name: tag, target_commitish: context.sha,
+                name: 'Turner ' + manifest.version + ' · puente desde Tuner Compact r3',
+                body: [
+                  'Puente de una sola vez para instalaciones de Tuner Compact r3.',
+                  'Contiene exactamente los archivos de la versión canónica de Turner; sólo cambia la carpeta raíz del ZIP para que r3 pueda instalarla.',
+                  'Versión canónica: https://github.com/Tangram-Space/updates/releases/tag/' + canonicalTag,
+                  'La app y su interfaz se llaman Turner. La actualización conserva la ruta Tuner Compact.app existente; no renombra la instalación.',
+                  'A partir de esta versión, las actualizaciones consultan exclusivamente el canal estable de Turner en Tangram-Space/updates.',
+                  'Para una instalación nueva con la carpeta Turner.app, descargá el paquete canónico.',
+                ].join('\n\n'),
+                draft: true, prerelease: false, make_latest: 'false',
+              });
+              if (!draft.draft || draft.tag_name !== tag) fail('GitHub did not return the expected bridge draft.');
+              for (const file of files) {
+                await github.rest.repos.uploadReleaseAsset({
+                  ...context.repo, release_id: draft.id, name: file.name,
+                  headers: { 'content-type': file.type, 'content-length': file.bytes.length }, data: file.bytes,
+                });
+              }
+              const uploaded = await github.paginate(github.rest.repos.listReleaseAssets, {
+                ...context.repo, release_id: draft.id, per_page: 100,
+              });
+              if (uploaded.length !== files.length) fail('The bridge draft has an incomplete asset set.');
+              for (const file of files) {
+                const matches = uploaded.filter((asset) => asset.name === file.name);
+                if (matches.length !== 1 || matches[0].state !== 'uploaded' ||
+                    matches[0].size !== file.bytes.length || matches[0].digest !== 'sha256:' + digest(file.bytes)) {
+                  fail('GitHub could not verify bridge asset ' + file.name);
+                }
+              }
+              const { data: published } = await github.rest.repos.updateRelease({
+                ...context.repo, release_id: draft.id, draft: false, prerelease: false, make_latest: 'true',
+              });
+              if (published.draft || published.prerelease || published.tag_name !== tag) fail('GitHub did not confirm the stable bridge.');
+              core.notice('Published the one-time r3 bridge: ' + published.html_url);
+            } catch (error) {
+              core.warning('The bridge did not finish cleanly. Inspect the reserved tag/draft; it is never overwritten automatically.');
+              throw error;
+            }
+            // END TURNER_BRIDGE_PUBLISHER
