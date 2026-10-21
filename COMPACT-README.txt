@@ -54,7 +54,7 @@ termina cuando esa llamada retorna. No se crea otro intento nativo simultáneo.
 
 VALIDACIÓN
 
-En Linux pasaron 51 pruebas integradas: 16 de audio-input y 35 del cliente,
+En Linux y macOS Intel pasaron 51 pruebas integradas: 16 de audio-input y 35 del cliente,
 incluidas las regresiones de permisos lentos, cancelación, cierre con sender
 retenido, pool lleno, solicitudes obsoletas y silencio inmediato del tono.
 La selección de los 33 presets se comprobó con eventos de egui, incluidos
@@ -65,18 +65,21 @@ ZIP inseguros, Mach-O, cancelación, confirmación del helper y el instalador
 Bash con utilidades del sistema simuladas. Se probó apertura aceptada y
 fallida, conservación/restauración del respaldo y rutas con espacios,
 comillas y caracteres especiales. Los parsers aceptaron el ZIP y el ejecutable
-Mac Intel reales de la primera revisión. El reemplazo real en macOS aún no
-se ha ejecutado en este entorno.
-El workflow indicado abajo compila en macOS y verifica el paquete antes de
-publicarlo. Una release sólo está disponible si esas comprobaciones pasan.
+Mac Intel de la primera revisión y los recién compilados de r3. El reemplazo
+real en macOS aún no se ha ejecutado en este entorno.
+El workflow compiló, verificó y publicó r3 correctamente. La descarga pública
+del ZIP coincide con el checksum, el manifiesto y el hash informado por GitHub:
+8d2b9c9b25aac2bcd36afec79d29befb8277d7e113fa85659ec3c129d6766d80
+Ejecución: https://github.com/Chevosky/tuner-compact/actions/runs/39624312120
 Estas comprobaciones no sustituyen la prueba física con Big Sur 11.7.10 y BRIO.
 No se dispone de una traza del proceso que se colgó en el iMac.
 
-INSTALAR EN EL IMAC CUANDO ESTÉ COMPILADA
+INSTALAR EN EL IMAC
 
-Este paquete de fuentes no incluye una app r3 compilada. Los siguientes
-pasos corresponden al ZIP que genere el script de compilación o una futura
-ejecución exitosa del workflow con el código completo de esta revisión.
+La app r3 compilada está publicada en:
+https://github.com/Chevosky/tuner-compact/releases/tag/compact-v0.1.13-r3
+Descargar Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip. El paquete de fuentes
+es independiente de ese ZIP instalable.
 
 1. Cerrar la app anterior antes de reemplazarla.
 2. Descomprimir Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip.

@@ -10,13 +10,17 @@ abierta. La apertura y el cierre de audio se ejecutan fuera de la interfaz;
 se corrige la cancelación y el ciclo de referencias de CPAL/CoreAudio que
 retenía el micrófono.
 
-**Verificación local:** 51 pruebas integradas aprobadas (16 de audio y 35
-del cliente), más 26 del proceso de publicación con una API GitHub simulada.
-El verificador de actualizaciones también aceptó el ZIP y ejecutable Mac Intel
-reales de la primera revisión. El workflow verifica la compilación y el
-paquete macOS antes de publicar una release. Este paquete de fuentes no
-incluye una app compilada. La prueba de permisos y pausa con la BRIO debe
-hacerse en el iMac con Big Sur 11.7.10.
+**Revisión 3 publicada:** [descargar la app para Mac Intel](https://github.com/Chevosky/tuner-compact/releases/download/compact-v0.1.13-r3/Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip)
+o consultar la [release completa](https://github.com/Chevosky/tuner-compact/releases/tag/compact-v0.1.13-r3).
+
+**Verificación:** 51 pruebas integradas aprobadas tanto en Linux como en
+macOS Intel (16 de audio y 35 del cliente), más 26 del proceso de publicación
+con una API GitHub simulada. El verificador de actualizaciones aceptó el ZIP
+y ejecutable recién compilados de r3. La descarga pública coincide con el
+SHA-256 publicado. [Compilación y publicación verificadas](https://github.com/Chevosky/tuner-compact/actions/runs/39624312120).
+La prueba de permisos y pausa con la BRIO debe hacerse en el iMac con
+Big Sur 11.7.10. El reemplazo de la app mediante el actualizador aún requiere
+una prueba física en macOS.
 
 ### Actualizaciones desde la app
 
@@ -48,11 +52,11 @@ sólo compila, salvo que se active
 `publish`. Un push a `compact-intel` que incrementa `COMPACT_REVISION` ejecuta
 pruebas y compilación, y publica únicamente si todas las verificaciones pasan.
 
-### Instalar en el iMac cuando esté compilada
+### Instalar en el iMac
 
-1. Usar el ZIP creado por el script o descargar el artefacto
-   **Tuner-Compact-macos-Intel** cuando haya una ejecución r3 exitosa del
-   workflow **Build Tuner Compact for Intel** (retención: 14 días).
+1. Descargar el ZIP de la [release r3](https://github.com/Chevosky/tuner-compact/releases/tag/compact-v0.1.13-r3).
+   El artefacto **Tuner-Compact-macos-Intel** de Actions también está disponible
+   durante 14 días; la release es el canal que usa el actualizador.
 2. Cerrar la app anterior y descomprimir
    **Tuner-Compact-v0.1.13-r3-macos-x86_64.app.zip**.
 3. Mover **Tuner Compact.app** a **Aplicaciones** y abrirla.
@@ -61,7 +65,7 @@ pruebas y compilación, y publica únicamente si todas las verificaciones pasan.
    macOS lo solicite.
 
 - [Instrucciones y detalles de Tuner Compact](COMPACT-README.txt)
-- [Workflow manual](.github/workflows/build-compact-macos.yml)
+- [Workflow de compilación y publicación](.github/workflows/build-compact-macos.yml)
 
 ---
 
